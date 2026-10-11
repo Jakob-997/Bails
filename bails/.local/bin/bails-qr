@@ -1,0 +1,258 @@
+#!/bin/bash
+# Copyright (c) 2026 Bails contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+
+# QR transport only. Bitcoin Core owns transaction review and signing.
+set -uo pipefail
+umask 077
+
+dialog() { zenity --title='QR transfer' "$@"; }
+fail() { dialog --error --no-markup --text="$1"; return 1; }
+rpc() { bitcoin-cli "${core_args[@]}" "$@" 2>"$tmp/rpc-error"; }
+wallet_rpc() { rpc -rpcwallet="$wallet" "$@"; }
+wallet_frames() { python3 "$(dirname -- "${BASH_SOURCE[0]}")/bails-qr-frames" "$@"; }
+
+wallet_data() { python3 "$(dirname -- "${BASH_SOURCE[0]}")/bails-qr-wallet" "$@"; }
+
+choose_wallet() {
+    local wallets index
+    wallets=$(rpc listwallets) || { fail 'Open Bitcoin Core and load your wallet first.'; return 1; }
+    python3 -c 'import json, sys; sys.exit(0 if json.load(sys.stdin) else 1)' <<<"$wallets" || {
+        fail 'Load a wallet in Bitcoin Core first.'; return 1;
+    }
+    index=$(python3 -c 'import json, sys
+for i, name in enumerate(json.load(sys.stdin)):
+    print(i)
+    print(json.dumps(name))' <<<"$wallets" |
+        dialog --list --column=ID --column=Wallet --hide-column=1 --print-column=1 \
+            --text='Choose the wallet to use.' --height=320) || return 1
+    [[ $index =~ ^[0-9]+$ ]] || return 1
+    wallet=$(python3 -c 'import json, sys; print(json.load(sys.stdin)[int(sys.argv[1])], end="")' "$index" <<<"$wallets")
+}
+
+# Keep binary data in files, never shell variables. Raw oneshot has no delimiter.
+scan() {
+    if ! timeout 120 zbarcam --nodbus --raw -Sdisable -Sqrcode.enable -Sbinary --oneshot 2>"$tmp/camera-error" |
+        head -c 2954 >"$tmp/scan"; then
+        fail 'No QR code received. Check the camera and try again.'; return 1
+    fi
+    local size
+    size=$(stat -c %s "$tmp/scan")
+    if ((size < 1 || size > 2953)); then
+        fail 'The QR code is empty or too large.'; return 1
+    fi
+}
+
+unpack() {
+    # Bound both compressed input and decompressed output; reject truncated gzip.
+    if ! gzip -dc <"$tmp/scan" 2>/dev/null | head -c 1048577 >"$tmp/payload"; then
+        fail 'This is not a complete Bitcoin QR transfer.'; return 1
+    fi
+    [[ $(stat -c %s "$tmp/payload") -le 1048576 ]] || { fail 'Transfer is too large.'; return 1; }
+}
+
+show_qr() {
+    local image
+    gzip -n -9 <"$1" >"$tmp/transfer.gz" || return 1
+    if [[ $(stat -c %s "$tmp/transfer.gz") -gt 2953 ]]; then
+        fail 'This transfer does not fit in one QR code. Use a smaller transaction or Bitcoin Core file transfer.'; return 1
+    fi
+    image=$(mktemp "$tmp/qr.XXXXXXXX.png") || return 1
+    python3-qr --factory=pil --error-correction=L <"$tmp/transfer.gz" >"$image" || { fail 'Could not create the QR code.'; return 1; }
+    xdg-open "$image" || { fail 'Could not open the QR image.'; return 1; }
+    dialog --info --text='Scan the image on the other computer. Close the image viewer when finished, then click OK.'
+}
+
+export_wallet() {
+    choose_wallet || return 1
+    wallet_data export "$tmp/watch-only.json" "$wallet" "${core_args[@]}" 2>"$tmp/frames-error" || {
+        fail "$(cat "$tmp/frames-error")"; return 1;
+    }
+    wallet_frames show "$tmp/watch-only.json" 2>"$tmp/frames-error" || {
+        fail "$(cat "$tmp/frames-error")"; return 1;
+    }
+}
+
+save_received() {
+    local source=$1 filename=$2 dest
+    dest=$(dialog --file-selection --save --filename="$HOME/$filename" --title='Save received file') || return 1
+    # Never overwrite an existing file or follow an existing symlink.
+    (set -o noclobber; cat "$source" >"$dest") 2>/dev/null || {
+        fail 'Could not save. Choose a new filename in a writable folder.'; return 1;
+    }
+}
+
+receive_wallet() {
+    local status=0
+    wallet_frames scan "$tmp/payload" 2>"$tmp/frames-error" || status=$?
+    ((status != 2)) || return 1
+    ((status == 0)) || { fail "$(cat "$tmp/frames-error")"; return 1; }
+    local name
+    name=$(dialog --entry --text='Name the new watch-only wallet' --entry-text='Watch-only') || return 1
+    [[ $name =~ ^[a-zA-Z0-9][a-zA-Z0-9\ _-]{0,63}$ ]] || {
+        fail 'Choose a wallet name without a path.'; return 1;
+    }
+    wallet_data import "$tmp/payload" "$name" "${core_args[@]}" 2>"$tmp/frames-error" || {
+        fail "$(cat "$tmp/frames-error")"; return 1;
+    }
+    dialog --info --text='Watch-only wallet loaded in Bitcoin Core. Addresses and labels imported. Verify a receive address on your offline wallet before using it.'
+}
+
+validate_psbt() {
+    # Core GUI saves binary PSBTs; accept Core console base64 exports as well.
+    if [[ $(head -c 5 "$tmp/payload" | od -An -tx1 | tr -d ' \n') == 70736274ff ]]; then
+        base64 -w0 "$tmp/payload" >"$tmp/psbt"
+    else
+        tr -d '\r\n' <"$tmp/payload" >"$tmp/psbt"
+    fi
+    [[ -s $tmp/psbt ]] || return 1
+    # Add the newline required by bitcoin-cli -stdin without modifying the file.
+    { cat "$tmp/psbt"; printf '\n'; } | rpc -stdin decodepsbt >/dev/null || return 1
+    base64 -d "$tmp/psbt" >"$tmp/transaction.psbt" 2>/dev/null
+}
+
+send_psbt() {
+    local file
+    file=$(dialog --file-selection --title='Choose PSBT to show' --file-filter='PSBT files | *.psbt' --file-filter='All files | *') || return 1
+    [[ -f $file && $(stat -c %s -- "$file") -le 1048576 ]] || { fail 'Choose a PSBT file smaller than 1 MiB.'; return 1; }
+    head -c 1048577 -- "$file" >"$tmp/payload" || return 1
+    [[ $(stat -c %s "$tmp/payload") -le 1048576 ]] || { fail 'PSBT is too large.'; return 1; }
+    validate_psbt || { fail 'Bitcoin Core could not decode this PSBT.'; return 1; }
+    show_qr "$tmp/transaction.psbt"
+}
+
+receive_psbt() {
+    validate_psbt || { fail 'This QR does not contain a valid PSBT.'; return 1; }
+    save_received "$tmp/transaction.psbt" received.psbt || return 1
+    dialog --info --text='In Bitcoin Core, choose File → Load PSBT from file and open the saved file. Offline: review every recipient, amount and fee before signing. Save the signed PSBT and choose Send transaction to return it. Online: review the signed transaction in Core before broadcasting.'
+}
+
+check_address() {
+    local address info
+    choose_wallet || return 1
+    # Accept a plain address or the address part of a Bitcoin Core BIP21 QR.
+    address=$(cat "$tmp/payload")
+    address=${address#bitcoin:}
+    address=${address%%\?*}
+    [[ $address =~ ^[a-zA-Z0-9]{14,100}$ ]] || { fail 'Expected a Bitcoin address QR.'; return 1; }
+    info=$(wallet_rpc getaddressinfo "$address") || { fail 'Bitcoin Core rejected this address for the current network.'; return 1; }
+    if python3 -c 'import json, sys; sys.exit(0 if json.load(sys.stdin).get("ismine") is True else 1)' <<<"$info"; then
+        dialog --info --no-markup --text="Address belongs to the selected wallet:
+$address
+
+This checks ownership only, not a payment amount or whether the wallet can sign."
+    else
+        fail "Address does NOT belong to the selected wallet:
+$address"
+    fi
+}
+
+# Detect the format once; never rescan after asking the user to choose a wallet.
+scan_transfer() {
+    scan || return 1
+    if LC_ALL=C grep -Eq '^B\$[H2Z][BJ]' "$tmp/scan"; then
+        fail 'This is a wallet export. Use Wallet tools → Receive watch-only wallet.'; return 1
+    fi
+    if [[ $(head -c 2 "$tmp/scan" | od -An -tx1 | tr -d ' \n') == 1f8b ]]; then
+        unpack || return 1
+    else
+        cp -- "$tmp/scan" "$tmp/payload" || return 1
+    fi
+    if [[ $(head -c 16 "$tmp/payload" | od -An -tx1 | tr -d ' \n') == 53514c69746520666f726d6174203300 ]]; then
+        fail 'This is a wallet export. Use Wallet tools → Receive watch-only wallet.'; return 1
+    fi
+    # Match a plain address/BIP21 URI before passing arbitrary text to Core.
+    # Reject control/binary bytes instead of stripping them into a valid address.
+    if [[ $(LC_ALL=C tr -d '[:print:]' <"$tmp/payload" | wc -c) -eq 0 ]] &&
+        LC_ALL=C grep -Eq '^(bitcoin:)?[a-zA-Z0-9]{14,100}(\?[^[:cntrl:]]*)?$' "$tmp/payload"; then
+        check_address
+    else
+        receive_psbt
+    fi
+}
+
+wallet_tools() {
+    local action icon
+    icon="$(dirname -- "${BASH_SOURCE[0]}")/../share/icons/hicolor/scalable/apps/bails-qr.svg"
+    action=$(dialog --question --switch --icon="$icon" --width=420 --title='Wallet tools' \
+        --text='Set up the online watch-only wallet.' \
+        --extra-button='←  Back' --extra-button='↙  Receive watch-only wallet' \
+        --extra-button='↗  Export watch-only wallet') || :
+    case "$action" in
+        '↗  Export watch-only wallet') export_wallet ;;
+        '↙  Receive watch-only wallet') receive_wallet ;;
+    esac
+}
+
+transfer_menu() {
+    local action icon scan_label='Scan QR' send_label='↗  Send transaction' tools_label='Wallet tools'
+    icon="$(dirname -- "${BASH_SOURCE[0]}")/../share/icons/hicolor/scalable/apps/bails-qr.svg"
+    # Keep the label readable if the desktop has no camera/emoji font.
+    if command -v fc-match >/dev/null && fc-match -f '%{family}' ':charset=1f4f7' | grep -qi emoji; then
+        scan_label='📷  Scan QR'
+        send_label='📤  Send transaction'
+        tools_label='🔧  Wallet tools'
+    fi
+    while true; do
+        action=$(dialog --question --switch --icon="$icon" --width=420 \
+            --text='Scan to import a transaction or verify an address.
+Send to show a transaction QR.
+Wallet tools sets up a watch-only wallet.' \
+            --extra-button='Close' --extra-button="$tools_label" \
+            --extra-button="$send_label" --extra-button="$scan_label") || :
+        # Zenity extra buttons return their label even with a nonzero status.
+        case "$action" in
+            '📷  Scan QR'|'Scan QR') scan_transfer ;;
+            '📤  Send transaction'|'↗  Send transaction') send_psbt ;;
+            '🔧  Wallet tools'|'Wallet tools') wallet_tools ;;
+            *) return 0 ;;
+        esac
+    done
+}
+
+check_runtime() {
+    local tool
+    command -v zenity >/dev/null || { printf 'Missing dependency: zenity\n' >&2; return 1; }
+    for tool in python3 python3-qr zbarcam gzip base64 xdg-open timeout; do
+        command -v "$tool" >/dev/null || { fail "QR transfer requires $tool. This Tails installation is missing a required command."; return 1; }
+    done
+    wallet_frames --check 2>/dev/null || {
+        fail 'QR transfer needs the Python QR and GTK 4 modules included with Tails 7.'; return 1;
+    }
+    # Exercise the PNG backend, not just the presence of a command on PATH.
+    printf 'Bails QR transfer' | python3-qr --factory=pil --error-correction=L >/dev/null || {
+        fail 'The QR image generator is not working on this Tails installation.'; return 1;
+    }
+}
+
+main() {
+    check_runtime || return 1
+    [[ ${1:-} != --check ]] || return 0
+    command -v bitcoin-cli >/dev/null || { fail 'Install Bitcoin Core through Bails first.'; return 1; }
+    tmp=$(mktemp -d /tmp/bails-qr.XXXXXXXX) || return 1
+    trap 'rm -rf -- "$tmp"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    # Follow Core's normal config, with optional CLI flags for regtest/testing.
+    core_args=("$@")
+    transfer_menu
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi

@@ -1,0 +1,271 @@
+#!/usr/bin/python3
+# Copyright (c) 2026 Bails contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+"""Bounded, fixed-frame BBQr wallet transport. Compact public descriptors and labels rebuild the wallet."""
+
+import base64
+import io
+import json
+import math
+import os
+from pathlib import Path
+import re
+import selectors
+import subprocess
+import sys
+import time
+import zlib
+
+MAX_FILE = 1024 * 1024
+MAX_PARTS = 256
+MAX_FRAME = 4296
+FRAME_CHARS = 480  # Complete base32 groups; smaller QRs are easier to scan.
+SCAN_SECONDS = 300
+ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+class Cancelled(Exception):
+    pass
+
+
+def stop(process):
+    if process.poll() is None:
+        process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+
+
+def base36(number):
+    return ALPHABET[number // 36] + ALPHABET[number % 36]
+
+
+def encode(data):
+    if not data or len(data) > MAX_FILE:
+        raise ValueError("Wallet export must be between 1 byte and 1 MiB.")
+    compressor = zlib.compressobj(9, zlib.DEFLATED, -10)
+    compressed = compressor.compress(data) + compressor.flush()
+    encoding, payload = ("Z", compressed) if len(compressed) < len(data) else ("2", data)
+    text = base64.b32encode(payload).decode("ascii").rstrip("=")
+    count = math.ceil(len(text) / FRAME_CHARS)
+    if count > MAX_PARTS:
+        raise ValueError("This wallet needs too many QR frames. Use Bitcoin Core file transfer.")
+    return [f"B${encoding}J{base36(count)}{base36(i)}" + text[i * FRAME_CHARS:(i + 1) * FRAME_CHARS]
+            for i in range(count)]
+
+
+class Receiver:
+    def __init__(self):
+        self.header = None
+        self.parts = {}
+        self.count = 0
+
+    def add(self, frame):
+        if not 9 <= len(frame) <= MAX_FRAME or not re.fullmatch(r"B\$[H2Z]J[0-9A-Z]{4}[0-9A-Z]+", frame):
+            raise ValueError("Expected a watch-only wallet QR. Show its QR on the other computer.")
+        count, index = int(frame[4:6], 36), int(frame[6:8], 36)
+        if not 1 <= count <= MAX_PARTS or index >= count:
+            raise ValueError("Invalid QR frame number or too many frames.")
+        if self.header is not None and frame[:6] != self.header:
+            raise ValueError("QR frames belong to different transfers. Scan one wallet at a time.")
+        self.header, self.count = frame[:6], count
+        text, encoding = frame[8:], frame[2]
+        if encoding == "H":
+            if not re.fullmatch(r"(?:[0-9A-F]{2})+", text):
+                raise ValueError("Invalid hexadecimal QR data.")
+            part = bytes.fromhex(text)
+        else:
+            if not re.fullmatch(r"[A-Z2-7]+", text) or (index < count - 1 and len(text) % 8):
+                raise ValueError("Invalid base32 QR data.")
+            part = base64.b32decode(text + "=" * (-len(text) % 8))
+            if base64.b32encode(part).decode().rstrip("=") != text:
+                raise ValueError("Invalid base32 padding bits.")
+        if index in self.parts and self.parts[index] != part:
+            raise ValueError("Conflicting QR frames. Restart the transfer.")
+        self.parts[index] = part
+        if len(self.parts) != count:
+            return None
+        lengths = [len(self.parts[i]) for i in range(count)]
+        if count > 1 and (len(set(lengths[:-1])) != 1 or lengths[-1] > lengths[0]):
+            raise ValueError("Invalid QR part lengths.")
+        data = b"".join(self.parts[i] for i in range(count))
+        if encoding == "Z":
+            decompressor = zlib.decompressobj(-10)
+            data = decompressor.decompress(data, MAX_FILE + 1)
+            if len(data) > MAX_FILE or not decompressor.eof or decompressor.unused_data:
+                raise ValueError("Incomplete or oversized compressed wallet.")
+        if len(data) > MAX_FILE:
+            raise ValueError("Wallet setup file is too large.")
+        bundle = json.loads(data)
+        if not isinstance(bundle, dict) or bundle.get("format") != "bails-watch-only":
+            raise ValueError("Expected a Bails watch-only setup file.")
+        return data
+
+
+def gtk_modules():
+    import gi
+    gi.require_version("Gtk", "4.0")
+    from gi.repository import GLib, Gtk
+    return GLib, Gtk
+
+
+def make_png(frame):
+    import qrcode
+    from qrcode.constants import ERROR_CORRECT_L
+    qr = qrcode.QRCode(version=12, error_correction=ERROR_CORRECT_L, box_size=8, border=4)
+    qr.add_data(frame, optimize=0)
+    qr.make(fit=False)
+    png = io.BytesIO()
+    qr.make_image().save(png, format="PNG")
+    return png.getvalue()
+
+
+def show(path):
+    GLib, Gtk = gtk_modules()
+    from gi.repository import Gdk, GdkPixbuf, Gio
+    with open(path, "rb") as source:
+        frames = encode(source.read(MAX_FILE + 1))
+    app = Gtk.Application(application_id="org.bails.QRTransfer", flags=Gio.ApplicationFlags.NON_UNIQUE)
+
+    def activate(application):
+        window = Gtk.ApplicationWindow(application=application, title="Watch-only wallet QR")
+        window.set_resizable(False)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        for side in ("top", "bottom", "start", "end"):
+            getattr(box, "set_margin_" + side)(16)
+        picture = Gtk.Picture()
+        picture.set_size_request(584, 584)
+        label = Gtk.Label()
+        close = Gtk.Button(label="Close")
+        close.connect("clicked", lambda _button: window.close())
+        for child in (picture, label, close):
+            box.append(child)
+        window.set_child(box)
+        index = 0
+        cache = {}
+
+        def advance():
+            nonlocal index
+            if index not in cache:
+                loader = GdkPixbuf.PixbufLoader.new_with_type("png")
+                loader.write(make_png(frames[index]))
+                loader.close()
+                if len(cache) == 8:
+                    cache.pop(next(iter(cache)))
+                cache[index] = Gdk.Texture.new_for_pixbuf(loader.get_pixbuf())
+            picture.set_paintable(cache[index])
+            label.set_text(f"Scan on the other computer · QR {index + 1} of {len(frames)}")
+            index = (index + 1) % len(frames)
+            return True
+
+        advance()
+        timer = GLib.timeout_add(600, advance) if len(frames) > 1 else None
+        if timer:
+            window.connect("close-request", lambda _window: (GLib.source_remove(timer), False)[1])
+        window.present()
+
+    app.connect("activate", activate)
+    app.run([])
+
+
+def scan(path):
+    receiver = Receiver()
+    # BBQr is ASCII, so continuous --raw output has unambiguous newline framing.
+    # Keep one camera window open until all parts arrive or the user closes it.
+    camera = subprocess.Popen(["zbarcam", "--nodbus", "--raw", "-Sdisable", "-Sqrcode.enable", "-Sbinary"],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    buffer = bytearray()
+    deadline = time.monotonic() + SCAN_SECONDS
+    lines = 0
+    progress = None
+    try:
+        progress = subprocess.Popen(["zenity", "--progress", "--title=Receive watch-only wallet",
+                                     "--text=Point the camera at the wallet QR", "--percentage=0", "--auto-close"],
+                                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    text=True)
+        with selectors.DefaultSelector() as selector:
+            selector.register(camera.stdout, selectors.EVENT_READ)
+            while time.monotonic() < deadline:
+                if progress.poll() is not None:
+                    raise Cancelled()
+                if not selector.select(min(1, max(0, deadline - time.monotonic()))):
+                    continue
+                chunk = os.read(camera.stdout.fileno(), MAX_FRAME + 2)
+                if not chunk:
+                    if camera.wait() == 0:
+                        raise Cancelled()
+                    raise ValueError("Wallet scan stopped before all QR frames arrived.")
+                buffer.extend(chunk)
+                while b"\n" in buffer:
+                    frame, _, rest = buffer.partition(b"\n")
+                    buffer = bytearray(rest)
+                    lines += 1
+                    if lines > 8192:
+                        raise ValueError("Too many QR frames received. Restart the transfer.")
+                    data = receiver.add(frame.decode("ascii"))
+                    try:
+                        progress.stdin.write(f"# {len(receiver.parts)} of {receiver.count} QR frames received\n"
+                                             f"{100 * len(receiver.parts) // receiver.count}\n")
+                        progress.stdin.flush()
+                    except BrokenPipeError:
+                        raise Cancelled() from None
+                    if data is not None:
+                        Path(path).write_bytes(data)
+                        return
+                if len(buffer) > MAX_FRAME:
+                    raise ValueError("QR frame is too large.")
+        raise ValueError("Wallet scan timed out. Try again with the camera closer to the screen.")
+    finally:
+        if progress is not None:
+            try:
+                progress.stdin.close()
+            except BrokenPipeError:
+                pass
+            try:
+                progress.wait(timeout=0.2)
+            except subprocess.TimeoutExpired:
+                stop(progress)
+        stop(camera)
+        camera.stdout.close()
+
+
+def main():
+    try:
+        if sys.argv[1:] == ["--check"]:
+            import qrcode
+            gtk_modules()
+        elif len(sys.argv) == 3 and sys.argv[1] in ("show", "scan"):
+            (show if sys.argv[1] == "show" else scan)(sys.argv[2])
+        else:
+            raise ValueError("Usage: bails-qr-frames show|scan FILE")
+    except Cancelled:
+        return 2
+    except (ValueError, OSError, ImportError, zlib.error) as error:
+        print(str(error), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

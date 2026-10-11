@@ -88,6 +88,8 @@ elif [[ $(id -u) = "0" ]]; then # Check for root.
   "
     read -rp "PRESS ENTER TO EXIT SCRIPT, AND RUN AGAIN AS $USER. "
 else
+  # Check QR support before changing the installation; Core is installed below.
+  bash "$BAILS_DIR/bails/.local/bin/bails-qr" --check || exit 1
   printf '\033]2;Welcome to CipherStick!\a'
   # Install CipherStick to tmpfs
   rsync -rvh --perms "$BAILS_DIR/bails/" "$HOME"
@@ -155,6 +157,7 @@ Closing terminal window..."
     PARENT_PID=$(ps -o ppid= -p $$)
     kill -9 "$PARENT_PID"
   else
+    wait "$setup_pid" || exit 1
     zenity --info --title="CipherStick update successful" --text="CipherStick has been updated to $FULL_VERSION." "$ICON" --icon-name=bails128
   fi
   exit 0

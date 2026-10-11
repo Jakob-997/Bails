@@ -74,6 +74,14 @@ If you forget to close the wallet, Bitcoin Core shows
 **OK**: codex32 can't reach Bitcoin Core until you do. To stop the
 message, create a wallet with the same name again and close it.
 
+## QR transfer interface
+
+Open **CipherStick** > **QR transfer** for watch-only wallet export, PSBT
+transfer and address ownership checks. See [QR transfer](BITCOIN_QR.md) for
+dependencies and steps. Wallet tools automatically transfers a compressed full
+public descriptors and addresses with labels as a fixed sequence of smaller QR frames, preserving labels
+and address state. The commands below remain useful for manual single-QR transfers.
+
 ## Move the watch-only wallet to your CipherStick
 
 On the CryoStick:
@@ -131,5 +139,5 @@ camera itself needs two real computers.
 
 ## Still to do
 
-Tracked in #312: the receive-address check, and scripting the
-crossings so users don't type commands.
+The QR transfer helper covers the crossings and receive-address check. Testing
+the complete GUI flow on current stable Tails with real webcams remains required.

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Name=QR transfer
+Comment=Exchange Bitcoin wallet data with QR codes
+Exec=/live/persistence/TailsData_unlocked/dotfiles/.local/bin/bails-qr
+Terminal=false
+Type=Application
+Icon=bails-qr
+Categories=Finance;Utility;
+Keywords=Bitcoin;QR;PSBT;wallet;

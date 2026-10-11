@@ -1,0 +1,127 @@
+#!/usr/bin/python3
+# Copyright (c) 2026 Bails contributors
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+# THE SOFTWARE.
+"""Public descriptor and address-label transfer. See bails-qr for MIT license."""
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+MAX_FILE = 1024 * 1024
+
+
+def validate(data):
+    if len(data) > MAX_FILE:
+        raise ValueError("Wallet setup file exceeds 1 MiB.")
+    bundle = json.loads(data)
+    if (not isinstance(bundle, dict) or bundle.get("format") != "bails-watch-only"
+            or bundle.get("version") != 1 or bundle.get("network") not in
+            ("main", "test", "testnet4", "signet", "regtest")):
+        raise ValueError("Expected a Bails watch-only setup file.")
+    descriptors, labels = bundle.get("descriptors"), bundle.get("labels")
+    if not isinstance(descriptors, list) or not 1 <= len(descriptors) <= 128:
+        raise ValueError("Invalid descriptor list.")
+    for item in descriptors:
+        if (not isinstance(item, dict) or set(item) - {"desc", "timestamp", "active", "internal", "range", "next_index"}
+                or not isinstance(item.get("desc"), str)
+                or type(item.get("timestamp")) is not int or item["timestamp"] < 0
+                or type(item.get("active")) is not bool):
+            raise ValueError("Invalid public descriptor metadata.")
+        if "internal" in item and type(item["internal"]) is not bool:
+            raise ValueError("Invalid descriptor branch.")
+        if "range" in item:
+            bounds = item["range"]
+            if (not isinstance(bounds, list) or len(bounds) != 2
+                    or any(type(n) is not int for n in bounds)
+                    or not 0 <= bounds[0] <= bounds[1] <= 1000000):
+                raise ValueError("Invalid descriptor address range.")
+        if "next_index" in item and (type(item["next_index"]) is not int
+                                     or not 0 <= item["next_index"] <= 1000000):
+            raise ValueError("Invalid next address index.")
+    if not isinstance(labels, list) or len(labels) > 10000:
+        raise ValueError("Invalid address-label list.")
+    seen = set()
+    for item in labels:
+        if (not isinstance(item, dict) or set(item) != {"type", "ref", "label"}
+                or item["type"] != "addr" or not isinstance(item["ref"], str)
+                or not isinstance(item["label"], str) or item["ref"] in seen):
+            raise ValueError("Invalid or duplicate address label.")
+        seen.add(item["ref"])
+    return bundle
+
+
+def transfer(action, path, wallet, flags):
+    def rpc(method, *args, selected=None):
+        command = ["bitcoin-cli", *flags]
+        if selected is not None:
+            command.append("-rpcwallet=" + selected)
+        if method == "importdescriptors":
+            command.extend(["-stdin", method])
+            result = subprocess.run(command, input=args[0] + "\n", text=True, capture_output=True)
+        else:
+            result = subprocess.run([*command, method, *args], text=True, capture_output=True)
+        if result.returncode:
+            raise ValueError("Bitcoin Core: " + result.stderr.strip()[:1500])
+        return json.loads(result.stdout) if result.stdout.strip() else None
+
+    network = rpc("getblockchaininfo")["chain"]
+    if action == "export":
+        descriptors = rpc("listdescriptors", "false", selected=wallet)["descriptors"]
+        descriptors = [{key: value for key, value in item.items() if key != "next"}
+                       for item in descriptors]
+        labels = []
+        for label in rpc("listlabels", selected=wallet):
+            addresses = rpc("getaddressesbylabel", label, selected=wallet)
+            labels.extend({"type": "addr", "ref": address, "label": label} for address in addresses)
+        bundle = {"format": "bails-watch-only", "version": 1, "network": network,
+                  "descriptors": descriptors, "labels": labels}
+        data = json.dumps(bundle, ensure_ascii=False, separators=(",", ":")).encode()
+        validate(data)
+        Path(path).write_bytes(data)
+        return
+
+    with open(path, "rb") as source:
+        bundle = validate(source.read(MAX_FILE + 1))
+    if bundle["network"] != network:
+        raise ValueError("Wallet setup belongs to a different Bitcoin network.")
+    for item in bundle["descriptors"]:
+        if rpc("getdescriptorinfo", item["desc"])["hasprivatekeys"]:
+            raise ValueError("Wallet setup contains private keys; refusing import.")
+    for item in bundle["labels"]:
+        if not rpc("validateaddress", item["ref"])["isvalid"]:
+            raise ValueError("Wallet setup contains an invalid address.")
+    # A fresh wallet prevents overwriting or mixing another wallet's labels.
+    rpc("createwallet", wallet, "true", "true", "", "false", "true", "true")
+    requests = json.dumps(bundle["descriptors"], separators=(",", ":"))
+    results = rpc("importdescriptors", requests, selected=wallet)
+    if not all(item.get("success") is True for item in results):
+        raise ValueError("Descriptor import incomplete. Check the new wallet in Core; historical blocks may be unavailable.")
+    for item in bundle["labels"]:
+        rpc("setlabel", item["ref"], item["label"], selected=wallet)
+
+
+if __name__ == "__main__":
+    try:
+        if len(sys.argv) < 4 or sys.argv[1] not in ("export", "import"):
+            raise ValueError("Usage: bails-qr-wallet export|import FILE WALLET [CORE FLAGS]")
+        transfer(*sys.argv[1:4], sys.argv[4:])
+    except (ValueError, OSError, KeyError, TypeError) as error:
+        print(str(error), file=sys.stderr)
+        sys.exit(1)

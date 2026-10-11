@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<!-- Copyright (c) 2026 Bails contributors. MIT License.
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE. -->
+<rect x="2" y="2" width="60" height="60" rx="12" fill="#f6f5f4"/>
+<g fill="#241f31">
+<path fill-rule="evenodd" d="M10 10h18v18H10zm4 4v10h10V14zM36 10h18v18H36zm4 4v10h10V14zM10 36h18v18H10zm4 4v10h10V40z"/>
+<path d="M17 17h4v4h-4zM43 17h4v4h-4zM17 43h4v4h-4zM34 34h8v8h-8zM46 34h8v4h-8zM46 42h8v12h-4v-8h-4zM34 46h8v8h-8z"/>
+</g>
+</svg>
