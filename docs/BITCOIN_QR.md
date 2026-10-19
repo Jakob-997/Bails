@@ -89,22 +89,10 @@ errors must not silently return success without showing a window.
 
 Scan QR opens the camera immediately. Send transaction opens the file picker
 immediately. Wallet export opens its QR window after wallet selection, without
-a confirmation screen. Both Scan QR and wallet scanning show a small
-**Wallet QR transfer** Zenity window immediately, before a frame is detected.
-It initially says zero received with the total unknown, then shows X of Y
-once an animated transfer is detected. The same counter stays open when
-the transaction camera switches to continuous reception. Close
-the camera window or click **Cancel** in the counter window to cancel.
-On X11/XWayland, the receiver attempts to place the counter beside the ZBar
-preview using Xlib window ConfigureRequests directly, without requiring
-`xwininfo`. It verifies actual window separation and retries ignored move
-requests throughout scanning. While placement is pending or refused, it lowers
-the counter and raises the camera without changing keyboard focus, so the preview
-has priority. The counter remains available through the window switcher. It
-can shift the preview to make room, or put the counter above/below it if the
-screen is too narrow. Placement is optional: missing desktop capabilities,
-ambiguous window matches or insufficient space leave the counter movable by
-hand and do not interrupt the transfer. No extra package is installed.
+a confirmation screen. Both Scan QR and wallet reception show only the ZBar
+camera preview while scanning. There is no separate frame-counter window.
+Animated frames are still collected automatically. Close the camera window
+to cancel a scan.
 The initial transaction/address scan times out after two minutes; animated
 transfers allow five minutes. On detecting a multipart PSBT, the camera restarts
 in continuous mode with the first frame retained. Keep the animation running.

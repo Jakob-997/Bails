@@ -39,149 +39,6 @@ MAX_FRAME = 4296
 FRAME_CHARS = 480  # Complete base32 groups; smaller QRs are easier to scan.
 SCAN_SECONDS = 300
 ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-
-
-def side_positions(camera, counter, screen):
-    """Place adjacent windows inside the screen; move the preview only if needed."""
-    x, y, width, height = camera
-    _px, _py, pw, ph = counter
-    sw, sh = screen
-    py = max(48, min(y, sh - ph - 16))
-    if x + width + 16 + pw <= sw - 16:
-        return None, (x + width + 16, py)
-    if x - pw - 16 >= 16:
-        return None, (x - pw - 16, py)
-    if width + pw + 16 <= sw - 32:
-        return (16, y), (16 + width + 16, py)
-    px = max(16, min(x, sw - pw - 16))
-    if y + height + 48 + ph <= sh - 16:
-        return None, (px, y + height + 48)
-    if y - ph - 48 >= 48:
-        return None, (px, y - ph - 48)
-    return None
-
-
-def rectangles_separate(a, b):
-    x, y, w, h = a
-    bx, by, bw, bh = b
-    return x + w + 16 <= bx or bx + bw + 16 <= x or y + h + 48 <= by or by + bh + 48 <= y
-
-
-def x11_scan_windows(xlib, display, root):
-    """Find titled client windows even when nested inside WM decoration frames."""
-    import ctypes as C
-    candidates = {"camera": [], "counter": []}
-    pending = [(root, 0)]
-    seen = set()
-    while pending and len(seen) < 4096:
-        window, level = pending.pop()
-        if window in seen:
-            continue
-        seen.add(window)
-        name = C.c_void_p()
-        if xlib.XFetchName(display, window, C.byref(name)) and name.value:
-            try:
-                title = C.string_at(name).decode("utf-8", errors="replace")
-            finally:
-                xlib.XFree(name)
-            kind = "counter" if title.casefold() == "wallet qr transfer" else "camera" if "zbar" in title.lower() else None
-            if kind:
-                rr, child = C.c_ulong(), C.c_ulong()
-                x, y, ax, ay = C.c_int(), C.c_int(), C.c_int(), C.c_int()
-                w, h, border, depth = C.c_uint(), C.c_uint(), C.c_uint(), C.c_uint()
-                if (xlib.XGetGeometry(display, window, C.byref(rr), C.byref(x), C.byref(y),
-                                     C.byref(w), C.byref(h), C.byref(border), C.byref(depth))
-                        and xlib.XTranslateCoordinates(display, window, root, 0, 0,
-                                                       C.byref(ax), C.byref(ay), C.byref(child))):
-                    candidates[kind].append((window, (ax.value, ay.value, w.value, h.value)))
-        if level < 4:
-            rr, parent, count = C.c_ulong(), C.c_ulong(), C.c_uint()
-            children = C.POINTER(C.c_ulong)()
-            if xlib.XQueryTree(display, window, C.byref(rr), C.byref(parent), C.byref(children), C.byref(count)):
-                try:
-                    pending.extend((children[i], level + 1)
-                                   for i in range(min(count.value, 4096 - len(seen) - len(pending))))
-                finally:
-                    if children:
-                        xlib.XFree(children)
-    return candidates
-
-
-def position_counter():
-    """Discover and move X11 windows; success requires observed separation."""
-    if not os.environ.get("DISPLAY"):
-        return False
-    try:
-        import ctypes as C
-        from ctypes.util import find_library
-        library = find_library("X11") or "libX11.so.6"
-        xlib = C.CDLL(library)
-        signatures = {"XOpenDisplay": ([C.c_char_p], C.c_void_p),
-                      "XDefaultRootWindow": ([C.c_void_p], C.c_ulong),
-                      "XMoveWindow": ([C.c_void_p, C.c_ulong, C.c_int, C.c_int], C.c_int),
-                      "XLowerWindow": ([C.c_void_p, C.c_ulong], C.c_int),
-                      "XRaiseWindow": ([C.c_void_p, C.c_ulong], C.c_int),
-                      "XFlush": ([C.c_void_p], C.c_int), "XCloseDisplay": ([C.c_void_p], C.c_int),
-                      "XQueryTree": ([C.c_void_p, C.c_ulong, C.POINTER(C.c_ulong), C.POINTER(C.c_ulong),
-                                      C.POINTER(C.POINTER(C.c_ulong)), C.POINTER(C.c_uint)], C.c_int),
-                      "XFetchName": ([C.c_void_p, C.c_ulong, C.POINTER(C.c_void_p)], C.c_int),
-                      "XFree": ([C.c_void_p], C.c_int),
-                      "XGetGeometry": ([C.c_void_p, C.c_ulong, C.POINTER(C.c_ulong), C.POINTER(C.c_int),
-                                        C.POINTER(C.c_int), C.POINTER(C.c_uint), C.POINTER(C.c_uint),
-                                        C.POINTER(C.c_uint), C.POINTER(C.c_uint)], C.c_int),
-                      "XTranslateCoordinates": ([C.c_void_p, C.c_ulong, C.c_ulong, C.c_int, C.c_int,
-                                                 C.POINTER(C.c_int), C.POINTER(C.c_int), C.POINTER(C.c_ulong)], C.c_int),
-                      "XDefaultScreen": ([C.c_void_p], C.c_int),
-                      "XDisplayWidth": ([C.c_void_p, C.c_int], C.c_int),
-                      "XDisplayHeight": ([C.c_void_p, C.c_int], C.c_int),
-                      "XSetErrorHandler": ([C.c_void_p], C.c_void_p),
-                      "XSync": ([C.c_void_p, C.c_int], C.c_int)}
-        for name, (arguments, result) in signatures.items():
-            getattr(xlib, name).argtypes = arguments
-            getattr(xlib, name).restype = result
-        display = xlib.XOpenDisplay(None)
-        if not display:
-            return False
-        # Windows can disappear between enumeration and geometry queries.
-        # A stale window must not let Xlib's default handler exit the scanner.
-        handler_type = C.CFUNCTYPE(C.c_int, C.c_void_p, C.c_void_p)
-        ignore_error = handler_type(lambda _display, _event: 0)
-        previous_handler = xlib.XSetErrorHandler(C.cast(ignore_error, C.c_void_p))
-        try:
-            root = xlib.XDefaultRootWindow(display)
-            screen = xlib.XDefaultScreen(display)
-            candidates = x11_scan_windows(xlib, display, root)
-            if any(len(items) != 1 for items in candidates.values()):
-                return False
-            camera_id, camera = candidates["camera"][0]
-            counter_id, counter = candidates["counter"][0]
-            # Include space for title bars and borders in the separation gap.
-            positions = side_positions(camera, counter,
-                                       (xlib.XDisplayWidth(display, screen), xlib.XDisplayHeight(display, screen)))
-            if rectangles_separate(camera, counter):
-                return True
-            if positions is not None:
-                for wid, position in zip((camera_id, counter_id), positions):
-                    if position is not None:
-                        xlib.XMoveWindow(display, wid, *position)
-                xlib.XSync(display, False)
-            # Keep the camera unobscured while the compositor processes (or
-            # refuses) ConfigureRequests. These calls do not change focus.
-            xlib.XLowerWindow(display, counter_id)
-            xlib.XRaiseWindow(display, camera_id)
-            xlib.XFlush(display)
-        finally:
-            xlib.XSync(display, False)
-            xlib.XSetErrorHandler(previous_handler)
-            xlib.XCloseDisplay(display)
-        # Requests are asynchronous and may be ignored by the window manager.
-        # The scan loop retries and checks actual geometry on its next pass.
-        return False
-    except (OSError, subprocess.SubprocessError, ValueError, TypeError, AttributeError):
-        # Placement is optional; it must never break QR decoding or cancellation.
-        return False
-
-
 class Cancelled(Exception):
     pass
 
@@ -370,29 +227,8 @@ def show(path, file_type="J"):
         raise ValueError("QR display failed: " + errors[0])
 
 
-def open_counter(text="Waiting for QR frames. 0 received; total not known yet."):
-    return subprocess.Popen(
-            ["zenity", "--progress", "--title=Wallet QR transfer", "--no-markup",
-             "--text=" + text, "--percentage=0",
-             "--width=380", "--height=120", "--auto-close"],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True,
-            env=dict(os.environ, **({"GDK_BACKEND": "x11"} if os.environ.get("DISPLAY") else {})))
-
-
-def close_counter(progress):
-    try:
-        progress.stdin.close()
-    except BrokenPipeError:
-        pass
-    try:
-        progress.wait(timeout=0.2)
-    except subprocess.TimeoutExpired:
-        stop(progress)
-
-
 def scan_any(path):
-    """Show progress immediately while retaining binary oneshot framing."""
-    progress = open_counter()
+    """Scan using only the camera window, retaining binary oneshot framing."""
     camera = None
     try:
         camera = subprocess.Popen(
@@ -400,22 +236,17 @@ def scan_any(path):
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
         first = bytearray()
         deadline = time.monotonic() + 120
-        positioned, next_position = False, 0.0
         with selectors.DefaultSelector() as selector:
             selector.register(camera.stdout, selectors.EVENT_READ)
             while time.monotonic() < deadline:
-                if progress.poll() is not None:
-                    raise Cancelled()
-                now = time.monotonic()
-                if not positioned and next_position <= now:
-                    positioned = position_counter()
-                    next_position = now + 0.5
                 if not selector.select(0.2):
                     continue
                 chunk = os.read(camera.stdout.fileno(), MAX_FRAME + 1)
                 if not chunk:
                     if camera.wait() != 0:
                         raise ValueError("No QR code received. Check the camera and try again.")
+                    if not first:
+                        raise Cancelled()
                     break
                 first.extend(chunk)
                 if len(first) > MAX_FRAME:
@@ -429,16 +260,14 @@ def scan_any(path):
             raise ValueError("The QR code is empty or too large.")
         Path(path).write_bytes(first)
         if re.match(rb"B\$[H2Z]P", first):
-            scan(path, "P", path, progress)
+            scan(path, "P", path)
     finally:
         if camera is not None:
             stop(camera)
             camera.stdout.close()
-        close_counter(progress)
 
 
-def scan(path, file_type="J", initial=None, progress=None):
-    own_progress = progress is None
+def scan(path, file_type="J", initial=None):
     receiver = Receiver(file_type)
     if initial is not None:
         with open(initial, "rb") as source:
@@ -456,23 +285,10 @@ def scan(path, file_type="J", initial=None, progress=None):
     buffer = bytearray()
     deadline = time.monotonic() + SCAN_SECONDS
     lines = 0
-    positioned = False
-    next_position = 0.0
     try:
-        if progress is None:
-            progress = open_counter()
-        if receiver.count:
-            progress.stdin.write(f"# {len(receiver.parts)} of {receiver.count} QR frames received\n")
-            progress.stdin.flush()
         with selectors.DefaultSelector() as selector:
             selector.register(camera.stdout, selectors.EVENT_READ)
             while time.monotonic() < deadline:
-                if progress.poll() is not None:
-                    raise Cancelled()
-                now = time.monotonic()
-                if not positioned and next_position <= now:
-                    positioned = position_counter()
-                    next_position = now + 0.5
                 if not selector.select(min(1, max(0, deadline - time.monotonic()))):
                     continue
                 chunk = os.read(camera.stdout.fileno(), MAX_FRAME + 2)
@@ -488,13 +304,6 @@ def scan(path, file_type="J", initial=None, progress=None):
                     if lines > 8192:
                         raise ValueError("Too many QR frames received. Restart the transfer.")
                     data = receiver.add(frame.decode("ascii"))
-                    try:
-                        progress.stdin.write(
-                            f"# {len(receiver.parts)} of {receiver.count} QR frames received\n"
-                            f"{100 * len(receiver.parts) // receiver.count}\n")
-                        progress.stdin.flush()
-                    except BrokenPipeError:
-                        raise Cancelled() from None
                     if data is not None:
                         Path(path).write_bytes(data)
                         return
@@ -502,8 +311,6 @@ def scan(path, file_type="J", initial=None, progress=None):
                     raise ValueError("QR frame is too large.")
         raise ValueError("QR scan timed out. Try again with the camera closer to the screen.")
     finally:
-        if own_progress and progress is not None:
-            close_counter(progress)
         stop(camera)
         camera.stdout.close()
 

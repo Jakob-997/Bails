@@ -49,52 +49,41 @@ def decode(frames):
 
 
 class WalletFramesTests(unittest.TestCase):
-    def test_initial_counter_precedes_camera_and_reuses_for_psbt(self):
+    def test_initial_scan_opens_only_camera_and_retains_psbt_seed(self):
         for data in (b"psbt\xff\x00\n\x01", transport.encode(b"psbt\xff" + b"x" * 2000, "P")[0].encode()):
-            events = []
-            progress, camera = MagicMock(), MagicMock()
-            progress.poll.return_value = None
+            camera = MagicMock()
             camera.wait.return_value = 0
             camera.poll.return_value = 0
-            def counter():
-                events.append("counter")
-                return progress
-            def spawn(*args, **kwargs):
-                events.append("camera")
-                self.assertIn("--oneshot", args[0])
-                return camera
             with tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / "scan"
-                with patch.object(transport, "open_counter", side_effect=counter), \
-                        patch.object(transport.subprocess, "Popen", side_effect=spawn), \
+                with patch.object(transport.subprocess, "Popen", return_value=camera) as spawn, \
                         patch.object(transport.selectors, "DefaultSelector") as selector, \
                         patch.object(transport.os, "read", side_effect=[data, b""]), \
-                        patch.object(transport, "position_counter", side_effect=[False, True]) as position, \
-                        patch.object(transport.time, "monotonic", side_effect=range(0, 1000, 10)), \
                         patch.object(transport, "scan") as receive:
                     selector.return_value.__enter__.return_value.select.return_value = [True]
                     transport.scan_any(output)
-                    self.assertEqual(events, ["counter", "camera"])
-                    self.assertEqual(position.call_count, 2)
+                    spawn.assert_called_once()
+                    self.assertEqual(spawn.call_args.args[0][0], "zbarcam")
                     if data.startswith(b"B$"):
-                        receive.assert_called_once_with(output, "P", output, progress)
+                        receive.assert_called_once_with(output, "P", output)
                     else:
                         receive.assert_not_called()
                     self.assertEqual(output.read_bytes(), data)
-                progress.stdin.close.assert_called_once()
                 camera.stdout.close.assert_called_once()
 
-    def test_initial_counter_cancel_stops_camera(self):
-        progress, camera = MagicMock(), MagicMock()
-        progress.poll.return_value = 0
-        camera.poll.return_value = None
-        with patch.object(transport, "open_counter", return_value=progress), \
-                patch.object(transport.subprocess, "Popen", return_value=camera), \
-                patch.object(transport.selectors, "DefaultSelector"):
+    def test_initial_camera_close_cancels_without_popup(self):
+        camera = MagicMock()
+        camera.wait.return_value = 0
+        camera.poll.return_value = 0
+        with patch.object(transport.subprocess, "Popen", return_value=camera) as spawn, \
+                patch.object(transport.selectors, "DefaultSelector") as selector, \
+                patch.object(transport.os, "read", return_value=b""):
+            selector.return_value.__enter__.return_value.select.return_value = [True]
             with self.assertRaises(transport.Cancelled):
                 transport.scan_any("unused")
-        camera.terminate.assert_called_once()
+            spawn.assert_called_once()
         camera.stdout.close.assert_called_once()
+
 
     def test_reference_psbt_vectors_and_compression_limits(self):
         bundle = json.loads((ROOT / "tests/fixtures/bbqr-psbt.json").read_text())
@@ -154,100 +143,14 @@ class WalletFramesTests(unittest.TestCase):
                 camera.assert_not_called()
             self.assertEqual(output.read_bytes(), data)
 
-    def test_counter_placement_uses_clear_side_or_rearranges(self):
-        self.assertEqual(transport.side_positions((30, 100, 640, 480), (0, 0, 380, 120), (1366, 768)),
-                         (None, (686, 100)))
-        self.assertEqual(transport.side_positions((360, 100, 640, 480), (0, 0, 380, 120), (1366, 768)),
-                         ((16, 100), (672, 100)))
-        self.assertEqual(transport.side_positions((200, 100, 640, 480), (0, 0, 380, 120), (1024, 768)),
-                         (None, (200, 628)))
-        self.assertIsNone(transport.side_positions((0, 0, 640, 480), (0, 0, 380, 120), (640, 480)))
 
-    def test_x11_placement_requests_nonoverlapping_window_positions(self):
-        import ctypes
-        lib = MagicMock()
-        lib.XOpenDisplay.return_value = 1
-        lib.XDefaultRootWindow.return_value = 10
-        lib.XDisplayWidth.return_value = 1366
-        lib.XDisplayHeight.return_value = 768
-        windows = {"camera": [(0x101, (360, 100, 640, 480))],
-                   "counter": [(0x102, (500, 400, 380, 120))]}
-        with patch.dict(os.environ, {"DISPLAY": ":test"}), \
-                patch.object(transport, "x11_scan_windows", return_value=windows), \
-                patch("ctypes.util.find_library", return_value="test-X11"), \
-                patch.object(ctypes, "CDLL", return_value=lib):
-            # An accepted request does not establish that the WM moved anything.
-            self.assertFalse(transport.position_counter())
-            windows["camera"] = [(0x101, (16, 100, 640, 480))]
-            windows["counter"] = [(0x102, (672, 100, 380, 120))]
-            self.assertTrue(transport.position_counter())
-            # A small screen may have no room for side-by-side windows. Keep
-            # the camera above the counter instead of leaving the preview hidden.
-            windows["camera"] = [(0x101, (0, 0, 640, 480))]
-            windows["counter"] = [(0x102, (100, 100, 380, 120))]
-            lib.XDisplayWidth.return_value = 640
-            lib.XDisplayHeight.return_value = 480
-            self.assertFalse(transport.position_counter())
-        self.assertEqual(lib.XMoveWindow.call_args_list,
-                         [unittest.mock.call(1, 0x101, 16, 100), unittest.mock.call(1, 0x102, 672, 100)])
-        self.assertEqual(lib.XLowerWindow.call_args_list, [unittest.mock.call(1, 0x102)] * 2)
-        self.assertEqual(lib.XRaiseWindow.call_args_list, [unittest.mock.call(1, 0x101)] * 2)
-        self.assertEqual(lib.XCloseDisplay.call_count, 3)
 
-    def test_native_window_discovery_finds_reparented_clients_without_xwininfo(self):
-        import ctypes as C
-        lib = MagicMock()
-        keep = []
-        titles = {11: "ZBar barcode reader", 12: "Wallet QR Transfer"}
-        def name(_display, window, pointer):
-            if window not in titles:
-                return 0
-            value = C.create_string_buffer(titles[window].encode())
-            keep.append(value)
-            pointer._obj.value = C.addressof(value)
-            return 1
-        def tree(_display, window, _root, _parent, children, count):
-            items = {1: [2], 2: [11, 12]}.get(window, [])
-            value = (C.c_ulong * len(items))(*items)
-            keep.append(value)
-            C.cast(children, C.POINTER(C.POINTER(C.c_ulong)))[0] = C.cast(value, C.POINTER(C.c_ulong))
-            count._obj.value = len(items)
-            return 1
-        def geometry(_display, window, _root, _x, _y, width, height, _border, _depth):
-            width._obj.value, height._obj.value = (640, 480) if window == 11 else (380, 120)
-            return 1
-        def translate(_display, window, _root, _x, _y, ax, ay, _child):
-            ax._obj.value, ay._obj.value = (16, 100) if window == 11 else (672, 100)
-            return 1
-        lib.XFetchName.side_effect = name
-        lib.XQueryTree.side_effect = tree
-        lib.XGetGeometry.side_effect = geometry
-        lib.XTranslateCoordinates.side_effect = translate
-        found = transport.x11_scan_windows(lib, 1, 1)
-        self.assertEqual(found, {"camera": [(11, (16, 100, 640, 480))],
-                                 "counter": [(12, (672, 100, 380, 120))]})
 
-    def test_counter_cancellation_stops_camera(self):
-        camera, progress = MagicMock(), MagicMock()
-        camera.poll.return_value = None
-        camera.wait.return_value = 0
-        progress.poll.return_value = 0
-        progress.wait.return_value = 0
-        with tempfile.TemporaryDirectory() as directory:
-            output = Path(directory) / "received"
-            with patch.object(transport.subprocess, "Popen", side_effect=[camera, progress]), \
-                    patch.object(transport.selectors, "DefaultSelector"):
-                with self.assertRaises(transport.Cancelled):
-                    transport.scan(output)
-            self.assertFalse(output.exists())
-        camera.terminate.assert_called_once()
-        camera.stdout.close.assert_called_once()
-        progress.stdin.close.assert_called_once()
 
-    def test_psbt_seeded_progress_and_cleanup(self):
-        self.test_progress_counter_and_camera_cleanup_without_desktop("P")
+    def test_psbt_seeded_camera_cleanup(self):
+        self.test_camera_only_cleanup_without_desktop("P")
 
-    def test_progress_counter_and_camera_cleanup_without_desktop(self, file_type="J"):
+    def test_camera_only_cleanup_without_desktop(self, file_type="J"):
         # Real child processes exercise the pipe/progress lifecycle. Only the
         # camera/UI commands and platform-specific readiness selector are replaced.
         class Ready:
@@ -272,10 +175,6 @@ class WalletFramesTests(unittest.TestCase):
                     command = [sys.executable, "-c",
                                "import pathlib,sys,time; sys.stdout.buffer.write(pathlib.Path(sys.argv[1]).read_bytes()); sys.stdout.buffer.flush(); time.sleep(30)",
                                str(source)]
-                elif command[0] == "zenity":
-                    command = [sys.executable, "-c",
-                               "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.stdin.read())",
-                               str(progress_log)]
                 else:
                     raise AssertionError(command)
                 process = real_popen(command, **kwargs)
@@ -285,9 +184,8 @@ class WalletFramesTests(unittest.TestCase):
                     patch.object(transport.selectors, "DefaultSelector", Ready):
                 transport.scan(output, file_type, initial if file_type == "P" else None)
             self.assertEqual(output.read_bytes(), data)
-            text = progress_log.read_text()
-            self.assertIn(f"{len(frames)} of {len(frames)} QR frames received", text)
-            self.assertIn("100", text)
+            self.assertEqual(len(children), 1)
+            self.assertFalse(progress_log.exists())
             self.assertTrue(all(child.poll() is not None for child in children))
 
     def test_first_qr_render_failure_is_not_silent_success(self):
@@ -369,7 +267,7 @@ class WalletFramesTests(unittest.TestCase):
             source, output = directory / "frames", directory / "wallet.dat"
             # Test doubles only replace camera hardware and progress UI.
             camera.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >"$CAMERA_ARGS"\ncat "$CAMERA_FRAMES"\nexec sleep 30\n')
-            progress.write_text('#!/bin/sh\ncat >"$PROGRESS_LOG"\n')
+            progress.write_text('#!/bin/sh\necho unexpected-popup >"$PROGRESS_LOG"\nexit 1\n')
             camera.chmod(0o755)
             progress.chmod(0o755)
             frames = transport.encode(data)
@@ -381,9 +279,7 @@ class WalletFramesTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             self.assertEqual(output.read_bytes(), data)
             self.assertNotIn("--oneshot", (directory / "args").read_text())
-            progress_text = (directory / "progress").read_text()
-            self.assertIn(f"{len(frames)} of {len(frames)} QR frames received", progress_text)
-            self.assertIn("100", progress_text)
+            self.assertFalse((directory / "progress").exists())
             output.unlink()
             camera.write_text('#!/bin/sh\nexit 0\n')
             result = subprocess.run([sys.executable, str(HELPER), "scan", str(output)], env=env, timeout=10)
