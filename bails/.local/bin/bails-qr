@@ -113,11 +113,20 @@ def scan(wallet_only=False):
             address = unquote(urlsplit(address).path)
         if not rpc("validateaddress", address)["isvalid"]:
             raise ValueError("Expected a PSBT, compressed wallet.dat, or Bitcoin address.")
-        wallet = wallet_name()
-        info = rpc("getaddressinfo", address, wallet=wallet)
-        result = "belongs to" if info.get("ismine") else "is not recognized by"
-        dialog("--info", f"--text={address}\n\nThis address {result} wallet {wallet}.\n"
-               "This checks wallet membership, not whether enough signing keys are available.")
+        if address.lower().startswith(("bc1", "tb1", "bcrt1")):
+            address = address.lower()
+        wallets = rpc("listwallets")
+        if not wallets:
+            raise ValueError("Open your wallet in Bitcoin Core, then scan the address again.")
+        if any(rpc("getaddressinfo", address, wallet=wallet).get("ismine") for wallet in wallets):
+            dialog("--info", "--title=Address confirmed", f"--text=✅ You own this address.\n\n{address}")
+        else:
+            dialog("--warning", "--title=WARNING: Address not owned",
+                   f"--text=⚠ WARNING: You do not own this address.\n\n{address}\n\n"
+                   "None of your open Bitcoin Core wallets recognize it.\n\n"
+                   "If this address came from your watch-only wallet, confirm the receive address "
+                   "again on your offline signing wallet. If it still does not match, your "
+                   "watch-only wallet or computer may be compromised. Do not send funds to this address.")
 
 
 def main():

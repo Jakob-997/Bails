@@ -56,11 +56,14 @@ BBQr QR exports; save a PSBT file in Sparrow for the return trip.
 
 ## Check a receive address
 
-Choose **Scan QR**, scan an address or a `bitcoin:` payment URI, and select
-a loaded Core wallet. The result reports whether Core recognizes the address
-as belonging to that wallet. It does not prove that enough private keys exist
-to spend, or check wallets that are not loaded. Payment URI amounts and other
-parameters are not used.
+Choose **Scan QR** and scan an address or a `bitcoin:` payment URI. The tool
+checks Core's `ismine` result across the open wallets automatically. Open your
+signing wallet in Core first; no wallet selection is needed for this check.
+An owned address gets a green check mark. An address that none of the open
+wallets recognize gets a warning to confirm it again on the offline signing
+wallet before sending funds. Bech32 addresses are displayed in lowercase;
+case-sensitive Base58 addresses keep their original case. Payment URI amounts
+and other parameters are not used.
 
 ## Transfer files when a QR is too large or no camera is available
 

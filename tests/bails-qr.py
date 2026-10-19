@@ -127,24 +127,68 @@ class StaticQRTests(unittest.TestCase):
         with patch.object(qr, "rpc", return_value=["", name]), patch.object(qr, "dialog", return_value="1"):
             self.assertEqual(qr.wallet_name(), name)
 
-    def test_address_check_uses_selected_wallet(self):
+    def test_address_checks_loaded_wallets_without_selection(self):
         address = "bcrt1qexample"
-        with patch.object(qr, "run", return_value=f"bitcoin:{address}?amount=1".encode()), \
-                patch.object(qr, "wallet_name", return_value="selected"), \
-                patch.object(qr, "rpc", side_effect=[{"isvalid": True}, {"ismine": True}]) as rpc, \
+        with patch.object(qr, "run", return_value=f"bitcoin:{address.upper()}?amount=1".encode()), \
+                patch.object(qr, "wallet_name") as choose, \
+                patch.object(qr, "rpc", side_effect=[{"isvalid": True}, ["other", "signing"],
+                                                    {"ismine": False}, {"ismine": True}]) as rpc, \
                 patch.object(qr, "dialog") as dialog:
             qr.scan()
             self.assertEqual(rpc.call_args.args, ("getaddressinfo", address))
-            self.assertEqual(rpc.call_args.kwargs, {"wallet": "selected"})
-            self.assertIn("belongs to wallet selected", dialog.call_args.args[1])
+            self.assertEqual(rpc.call_args.kwargs, {"wallet": "signing"})
+            choose.assert_not_called()
+            dialog.assert_called_once_with("--info", "--title=Address confirmed",
+                                           f"--text=✅ You own this address.\n\n{address}")
 
     def test_plain_address_without_scanner_newline(self):
         with patch.object(qr, "run", return_value=b"bcrt1qexample"), \
-                patch.object(qr, "wallet_name", return_value="selected"), \
-                patch.object(qr, "rpc", side_effect=[{"isvalid": True}, {"ismine": True}]) as rpc, \
+                patch.object(qr, "rpc", side_effect=[{"isvalid": True}, ["signing"], {"ismine": True}]) as rpc, \
                 patch.object(qr, "dialog"):
             qr.scan()
             self.assertEqual(rpc.call_args.args, ("getaddressinfo", "bcrt1qexample"))
+
+    def test_unowned_address_has_prominent_warning(self):
+        with patch.object(qr, "run", return_value=b"BCRT1QEXAMPLE"), \
+                patch.object(qr, "rpc", side_effect=[{"isvalid": True}, ["signing"], {"ismine": False}]), \
+                patch.object(qr, "dialog") as dialog:
+            qr.scan()
+            self.assertEqual(dialog.call_args.args[0], "--warning")
+            message = dialog.call_args.args[2]
+            for text in ("WARNING", "You do not own this address", "bcrt1qexample", "may be compromised"):
+                self.assertIn(text, message)
+
+    def test_address_check_requires_an_open_wallet(self):
+        with patch.object(qr, "run", return_value=b"bcrt1qexample"), \
+                patch.object(qr, "rpc", side_effect=[{"isvalid": True}, []]), \
+                patch.object(qr, "dialog") as dialog, self.assertRaisesRegex(ValueError, "Open your wallet"):
+            qr.scan()
+        dialog.assert_not_called()
+
+    def test_base58_address_keeps_its_case(self):
+        address = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+        with patch.object(qr, "run", return_value=address.encode()), \
+                patch.object(qr, "rpc", side_effect=[{"isvalid": True}, ["signing"], {"ismine": True}]) as rpc, \
+                patch.object(qr, "dialog") as dialog:
+            qr.scan()
+            self.assertEqual(rpc.call_args.args, ("getaddressinfo", address))
+            self.assertIn(address, dialog.call_args.args[2])
+
+    def test_invalid_address_is_not_normalized_into_validity(self):
+        with patch.object(qr, "run", return_value=b"bCrT1qExAmPlE"), \
+                patch.object(qr, "rpc", return_value={"isvalid": False}) as rpc, \
+                patch.object(qr, "dialog") as dialog, self.assertRaises(ValueError):
+            qr.scan()
+        rpc.assert_called_once_with("validateaddress", "bCrT1qExAmPlE")
+        dialog.assert_not_called()
+
+    def test_wallet_rpc_failure_does_not_report_unowned(self):
+        error = subprocess.CalledProcessError(1, "bitcoin-cli", stderr=b"wallet unavailable")
+        with patch.object(qr, "run", return_value=b"bcrt1qexample"), \
+                patch.object(qr, "rpc", side_effect=[{"isvalid": True}, ["signing"], error]), \
+                patch.object(qr, "dialog") as dialog, self.assertRaises(subprocess.CalledProcessError):
+            qr.scan()
+        dialog.assert_not_called()
 
     def test_import_wallet_rejects_other_qr_types(self):
         with patch.object(qr, "run", return_value=base64.b64encode(PSBT)), \
