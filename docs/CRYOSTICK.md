@@ -76,6 +76,10 @@ message, create a wallet with the same name again and close it.
 
 ## Move the watch-only wallet to your CipherStick
 
+For dialogs instead of console commands, open **CipherStick** > **QR transfer**.
+See [Static QR transfer](BITCOIN_QR.md) for watch-only wallet and PSBT transfer,
+receive-address checks, and the USB or microSD fallback.
+
 On the CryoStick:
 
 1. In Bitcoin Core, choose **File** > **Export watch-only wallet** and save
@@ -131,5 +135,4 @@ camera itself needs two real computers.
 
 ## Still to do
 
-Tracked in #312: the receive-address check, and scripting the
-crossings so users don't type commands.
+Test the static QR interface on current Tails with two real webcams.
