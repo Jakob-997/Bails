@@ -45,9 +45,13 @@ to use a test node. `--check` tests the QR runtime without opening the menu.
   the program searches every loaded wallet and wallet found by Core's
   `listwalletdir`. Unloaded wallets are temporarily loaded and then unloaded;
   existing startup preferences are preserved. Loading can require a rescan.
-  Progress and per-wallet failures are shown. Every matching wallet is listed.
-  Ownership and key status are separate results. No wallet-selection prompt
-  is needed for address checks.
+  Progress and per-wallet failures are shown. Only wallets with a confirmed
+  single-key match or a private HD key associated with a complex/multisig
+  descriptor are listed. Watch-only matches are hidden. Multisig results retain
+  their additional-signer warning. No wallet-selection prompt is needed.
+  If no signing wallet is found, a prominent warning tells you to stop and
+  verify the address and offline wallet. It does not claim compromise is proven.
+  Failed key or wallet checks instead produce an incomplete-check warning.
   For a PSBT, choose a new filename, then open it in Core using **File → Load PSBT
   from file**. Offline, review and sign. Online, review the returned signed
   transaction before broadcasting in Core.
@@ -73,8 +77,9 @@ to use a test node. `--check` tests the QR runtime without opening the menu.
   are not included in compact exports. The QR window and import completion
   dialog state this limitation; this transfer is not a complete wallet backup.
 
-The menus use Zenity image lists with bundled icons, action names and short
-descriptions. Selecting a row highlights its description. Zenity has no
+The main menu uses Zenity image lists with bundled icons, action names and short
+descriptions. Wallet tools keeps icons and action names without redundant
+descriptions. Selecting a main-menu row highlights its description. Zenity has no
 selection-change callback for a separate dynamic help area, so descriptions
 remain visible alongside each action. Select an action and click **Open**, or
 double-click it. **Close** and Escape exit the main menu.
@@ -87,6 +92,12 @@ immediately. Wallet export opens its QR window after wallet selection, without
 a confirmation screen. Wallet scanning shows a small **Wallet QR transfer**
 Zenity window with the number of frames received and a progress bar. Close
 the camera window or click **Cancel** in the counter window to cancel.
+On X11/XWayland, the receiver attempts to place the counter beside the ZBar
+preview using existing `xwininfo` and Xlib/EWMH window-manager interfaces. It
+can shift the preview to make room, or put the counter above/below it if the
+screen is too narrow. Placement is optional: missing desktop capabilities,
+ambiguous window matches or insufficient space leave the counter movable by
+hand and do not interrupt the transfer. No extra package is installed.
 Transaction/address scans time out after two minutes; wallet scans after five.
 Transaction QR images open in a separate viewer; close it after scanning.
 Received files are saved only to a user-selected new path; existing files and
@@ -138,9 +149,11 @@ symlinks are never overwritten.
   Complex scripts, multisig, individual imported keys, unavailable RPCs and
   ambiguous derivations are reported as unverified. Neither `ismine` nor
   `private_keys_enabled` alone is treated as proof of signing ability.
-  Results show a green check for a confirmed single-key match, a red cross for
-  enforced watch-only wallets, and an amber caution for multisig or unverified
-  checks. A locked wallet explicitly says it must be unlocked before signing.
+  Results show a green check for a confirmed single-key match and an amber
+  caution for complex policies or multisig with an associated private HD key.
+  Enforced watch-only matches are omitted. Unverified key checks are reported
+  as incomplete rather than silently treated as a definite non-match. A locked
+  wallet explicitly says it must be unlocked before signing.
   BIP21 amounts and balances are not checked. Control/binary bytes in an
   address payload are rejected instead of silently removed.
 - Descriptor birth timestamps are included in compact exports. Core can also

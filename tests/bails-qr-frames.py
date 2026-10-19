@@ -47,6 +47,42 @@ def decode(frames):
 
 
 class WalletFramesTests(unittest.TestCase):
+    def test_counter_placement_uses_clear_side_or_rearranges(self):
+        self.assertEqual(transport.side_positions((30, 100, 640, 480), (0, 0, 380, 120), (1366, 768)),
+                         (None, (686, 100)))
+        self.assertEqual(transport.side_positions((360, 100, 640, 480), (0, 0, 380, 120), (1366, 768)),
+                         ((16, 100), (672, 100)))
+        self.assertEqual(transport.side_positions((200, 100, 640, 480), (0, 0, 380, 120), (1024, 768)),
+                         (None, (200, 596)))
+        self.assertIsNone(transport.side_positions((0, 0, 640, 480), (0, 0, 380, 120), (640, 480)))
+
+    def test_x11_placement_requests_nonoverlapping_window_positions(self):
+        import ctypes
+        tree = ('  0x101 "zbar barcode reader": () 640x480+0+0 +360+100\n'
+                '  0x102 "Wallet QR transfer": () 380x120+0+0 +500+400\n')
+        lib = MagicMock()
+        lib.XOpenDisplay.return_value = 1
+        lib.XDefaultRootWindow.return_value = 10
+        lib.XInternAtom.return_value = 42
+        moves = []
+        def sent(_display, _root, _propagate, _mask, pointer):
+            event = pointer._obj.client
+            self.assertEqual(event.message_type, 42)
+            self.assertEqual(event.format, 32)
+            moves.append((event.window, event.data.l[1], event.data.l[2]))
+            return 1
+        lib.XSendEvent.side_effect = sent
+        replies = [subprocess.CompletedProcess([], 0, tree, ""),
+                   subprocess.CompletedProcess([], 0, "Width: 1366\nHeight: 768\n", "")]
+        with patch.dict(os.environ, {"DISPLAY": ":test"}), \
+                patch.object(transport.shutil, "which", return_value="/usr/bin/xwininfo"), \
+                patch.object(transport.subprocess, "run", side_effect=replies), \
+                patch("ctypes.util.find_library", return_value="test-X11"), \
+                patch.object(ctypes, "CDLL", return_value=lib):
+            self.assertTrue(transport.position_counter())
+        self.assertEqual(moves, [(0x101, 16, 100), (0x102, 672, 100)])
+        lib.XCloseDisplay.assert_called_once_with(1)
+
     def test_counter_cancellation_stops_camera(self):
         camera, progress = MagicMock(), MagicMock()
         camera.poll.return_value = None

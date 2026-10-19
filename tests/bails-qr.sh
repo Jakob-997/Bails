@@ -179,7 +179,7 @@ pass 'base64 PSBT input accepted as well as Core binary files'
 
 printf '%s' "bitcoin:$first?amount=0.1" | python3-qr --factory=pil >"$TEST_QR"
 scan_transfer
-grep -q 'Address belongs' "$tmp/last-dialog"
+grep -Fq 'Signing wallet(s) found' "$tmp/last-dialog"
 grep -q 'This wallet has the key needed to spend' "$tmp/last-dialog"
 printf '%s' "bitcoin:${first^^}?amount=0.1" | python3-qr --factory=pil >"$TEST_QR"
 scan_transfer
@@ -194,7 +194,7 @@ grep -q 'Wallet: "miner"' "$tmp/last-dialog"
 external=$(rpc deriveaddresses 'wpkh(0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)' | jq -r '.[0]')
 printf '%s' "$external" | python3-qr --factory=pil >"$TEST_QR"
 scan_transfer
-grep -q 'No matching wallet found' "$tmp/last-dialog"
+grep -q 'NO SIGNING WALLET FOUND' "$tmp/last-dialog"
 # A wallet loaded just for checking must return to its unloaded state.
 rpc unloadwallet offline >/dev/null
 printf '%s' "$first" | python3-qr --factory=pil >"$TEST_QR"
@@ -279,7 +279,7 @@ scan_transfer
 cmp "$tmp/unsigned.psbt" "$destination"
 printf '%s' "$first" | python3-qr --factory=pil >"$TEST_QR"
 scan_transfer
-grep -q 'Address belongs' "$tmp/last-dialog"
+grep -Fq 'Signing wallet(s) found' "$tmp/last-dialog"
 printf '%s' 'not a transaction' | python3-qr --factory=pil >"$TEST_QR"
 reject scan_transfer
 export CAMERA_FAIL=true

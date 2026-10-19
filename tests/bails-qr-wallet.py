@@ -226,6 +226,35 @@ class WalletTests(unittest.TestCase):
         self.assertEqual(self.methods().count("loadwallet"), 1)
         self.assertEqual(self.methods().count("unloadwallet"), 1)
 
+    def test_search_hides_watch_only_matches_and_warns_no_signer(self):
+        self.status["private_keys_enabled"] = False
+        with contextlib.redirect_stdout(io.StringIO()):
+            wallet.transfer("address-all", ADDRESS, str(self.path), [])
+        report = self.path.read_text(encoding="utf-8")
+        self.assertIn("NO SIGNING WALLET FOUND", report)
+        self.assertIn("Do not use this receive address yet", report)
+        self.assertNotIn('Wallet: "offline"', report)
+        self.assertNotIn("watch-only", report.lower())
+        self.assertIn("does not prove compromise", report)
+
+    def test_unverified_key_lookup_reports_incomplete_not_definite_no_match(self):
+        self.derived = ["bcrt1different"]
+        with contextlib.redirect_stdout(io.StringIO()):
+            wallet.transfer("address-all", ADDRESS, str(self.path), [])
+        report = self.path.read_text(encoding="utf-8")
+        self.assertIn("ADDRESS CHECK INCOMPLETE", report)
+        self.assertNotIn("NO SIGNING WALLET FOUND", report)
+
+    def test_search_includes_partial_multisig_when_core_reports_a_private_key(self):
+        self.info["parent_desc"] = "wsh(sortedmulti(2,tpubABC123/0/*,tpubOther/0/*))#sum"
+        self.keys[0]["descriptors"][0]["desc"] = self.info["parent_desc"]
+        with contextlib.redirect_stdout(io.StringIO()):
+            wallet.transfer("address-all", ADDRESS, str(self.path), [])
+        report = self.path.read_text(encoding="utf-8")
+        self.assertIn('Wallet: "offline"', report)
+        self.assertIn("Multisig policy", report)
+        self.assertNotIn("✓", report)
+
     def test_failed_lookup_still_unloads_and_reports_incomplete(self):
         self.fail_address.add("archived")
         with contextlib.redirect_stdout(io.StringIO()):

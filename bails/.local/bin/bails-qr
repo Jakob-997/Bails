@@ -34,18 +34,18 @@ choose_action() {
     local icons
     icons="$(dirname -- "${BASH_SOURCE[0]}")/../share/icons/hicolor/scalable/apps"
     if [[ $1 == wallet ]]; then
-        dialog --list --imagelist --column=Icon --column=Action --column=Description \
+        dialog --list --imagelist --column=Icon --column=Action \
             --hide-header --print-column=2 --width=660 --height=300 \
             --title='Wallet tools' --ok-label=Open --cancel-label=Back \
             --text='Set up the online watch-only wallet.' \
-            "$icons/bails-send.svg" 'Export watch-only wallet' 'Show public wallet data as QR codes.' \
-            "$icons/bails-qr.svg" 'Receive watch-only wallet' 'Scan and load a new watch-only wallet.'
+            "$icons/bails-send.svg" 'Export watch-only wallet' \
+            "$icons/bails-qr.svg" 'Receive watch-only wallet'
     else
         dialog --list --imagelist --column=Icon --column=Action --column=Description \
             --hide-header --print-column=2 --width=660 --height=340 \
             --ok-label=Open --cancel-label=Close \
-            --text='Scan a transaction or check an address across all wallets.' \
-            "$icons/bails-qr.svg" 'Scan QR' 'Import a PSBT or check an address.' \
+            --text='Scan a transaction or check whether a receive address belongs to you.' \
+            "$icons/bails-qr.svg" 'Scan QR' 'Check a receive address or import a PSBT.' \
             "$icons/bails-send.svg" 'Send transaction' 'Show a saved PSBT as a QR code.' \
             "$icons/bails-wallet-tools.svg" 'Wallet tools' 'Export or receive a watch-only wallet.'
     fi
@@ -165,7 +165,7 @@ receive_psbt() {
 }
 
 check_address() {
-    local address info
+    local address info kind=--info
     # Accept a plain address or the address part of a Bitcoin Core BIP21 QR.
     address=$(cat "$tmp/payload")
     address=${address#bitcoin:}
@@ -176,15 +176,19 @@ check_address() {
             --text='Checking all wallets. Loading a wallet may require a rescan.' || {
         fail "$(cat "$tmp/frames-error")"; return 1;
     }
+    if [[ $(head -n1 "$tmp/address-result") == '⚠'* ]]; then kind=--warning; fi
     info=$(python3 - "$tmp/address-result" <<'PY'
 import html, pathlib, sys
 text = html.escape(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"), quote=False)
+if text.startswith("⚠"):
+    heading, separator, body = text.partition("\n")
+    text = f'<span size="x-large" weight="bold" foreground="#c01c28">{heading}</span>' + separator + body
 for symbol, color in (("✓", "#238636"), ("✗", "#c01c28"), ("⚠", "#9c6500")):
     text = text.replace(symbol, f'<span foreground="{color}">{symbol}</span>')
 print(text)
 PY
     ) || return 1
-    dialog --info --width=620 --height=420 --text="$info"
+    dialog "$kind" --title='Receive address check' --width=620 --height=420 --text="$info"
 }
 
 # Detect the format once; never rescan after asking the user to choose a wallet.

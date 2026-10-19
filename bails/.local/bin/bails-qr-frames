@@ -28,6 +28,7 @@ import os
 from pathlib import Path
 import re
 import selectors
+import shutil
 import subprocess
 import sys
 import time
@@ -39,6 +40,99 @@ MAX_FRAME = 4296
 FRAME_CHARS = 480  # Complete base32 groups; smaller QRs are easier to scan.
 SCAN_SECONDS = 300
 ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+
+def side_positions(camera, counter, screen):
+    """Place adjacent windows inside the screen; move the preview only if needed."""
+    x, y, width, height = camera
+    _px, _py, pw, ph = counter
+    sw, sh = screen
+    py = max(48, min(y, sh - ph - 16))
+    if x + width + 16 + pw <= sw - 16:
+        return None, (x + width + 16, py)
+    if x - pw - 16 >= 16:
+        return None, (x - pw - 16, py)
+    if width + pw + 16 <= sw - 32:
+        return (16, y), (16 + width + 16, py)
+    px = max(16, min(x, sw - pw - 16))
+    if y + height + 16 + ph <= sh - 16:
+        return None, (px, y + height + 16)
+    if y - ph - 16 >= 48:
+        return None, (px, y - ph - 16)
+    return None
+
+
+def position_counter():
+    """Best-effort X11 placement using existing xwininfo and EWMH interfaces."""
+    if not os.environ.get("DISPLAY") or not shutil.which("xwininfo"):
+        return False
+    try:
+        import ctypes as C
+        from ctypes.util import find_library
+        library = find_library("X11")
+        if not library:
+            return False
+        env = dict(os.environ, LC_ALL="C")
+        tree = subprocess.run(["xwininfo", "-root", "-tree"], env=env,
+                              capture_output=True, text=True, timeout=1, check=True).stdout
+        candidates = {"camera": [], "counter": []}
+        for line in tree.splitlines():
+            kind = "counter" if '"Wallet QR transfer"' in line else "camera" if re.search(r'"[^\"]*zbar[^\"]*"', line, re.I) else None
+            match = re.search(r'^\s*(0x[0-9a-f]+).*? (\d+)x(\d+)[+-]\d+[+-]\d+\s+([+-]\d+)([+-]\d+)', line, re.I)
+            if kind and match:
+                wid, w, h, x, y = match.groups()
+                candidates[kind].append((int(wid, 16), (int(x), int(y), int(w), int(h))))
+        if any(len(items) != 1 for items in candidates.values()):
+            return False
+        root_info = subprocess.run(["xwininfo", "-root"], env=env,
+                                   capture_output=True, text=True, timeout=1, check=True).stdout
+        sw = int(re.search(r'Width:\s*(\d+)', root_info)[1])
+        sh = int(re.search(r'Height:\s*(\d+)', root_info)[1])
+        camera_id, camera = candidates["camera"][0]
+        counter_id, counter = candidates["counter"][0]
+        positions = side_positions(camera, counter, (sw, sh))
+        if positions is None:
+            return False
+        class Data(C.Union):
+            _fields_ = [("l", C.c_long * 5)]
+        class Client(C.Structure):
+            _fields_ = [("type", C.c_int), ("serial", C.c_ulong), ("send_event", C.c_int),
+                        ("display", C.c_void_p), ("window", C.c_ulong), ("message_type", C.c_ulong),
+                        ("format", C.c_int), ("data", Data)]
+        class Event(C.Union):
+            _fields_ = [("client", Client), ("pad", C.c_long * 24)]
+        xlib = C.CDLL(library)
+        signatures = {"XOpenDisplay": ([C.c_char_p], C.c_void_p),
+                      "XDefaultRootWindow": ([C.c_void_p], C.c_ulong),
+                      "XInternAtom": ([C.c_void_p, C.c_char_p, C.c_int], C.c_ulong),
+                      "XSendEvent": ([C.c_void_p, C.c_ulong, C.c_int, C.c_long, C.c_void_p], C.c_int),
+                      "XFlush": ([C.c_void_p], C.c_int), "XCloseDisplay": ([C.c_void_p], C.c_int)}
+        for name, (arguments, result) in signatures.items():
+            getattr(xlib, name).argtypes = arguments
+            getattr(xlib, name).restype = result
+        display = xlib.XOpenDisplay(None)
+        if not display:
+            return False
+        try:
+            root = xlib.XDefaultRootWindow(display)
+            atom = xlib.XInternAtom(display, b"_NET_MOVERESIZE_WINDOW", False)
+            for wid, position in zip((camera_id, counter_id), positions):
+                if position is None:
+                    continue
+                event = Event()
+                event.client.type, event.client.send_event = 33, True
+                event.client.display, event.client.window = display, wid
+                event.client.message_type, event.client.format = atom, 32
+                event.client.data.l[0] = (1 << 8) | (1 << 9) | (1 << 12)
+                event.client.data.l[1], event.client.data.l[2] = position
+                xlib.XSendEvent(display, root, False, (1 << 19) | (1 << 20), C.byref(event))
+            xlib.XFlush(display)
+        finally:
+            xlib.XCloseDisplay(display)
+        return True
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, AttributeError):
+        # Placement is optional; it must never break QR decoding or cancellation.
+        return False
 
 
 class Cancelled(Exception):
@@ -224,17 +318,25 @@ def scan(path):
     deadline = time.monotonic() + SCAN_SECONDS
     lines = 0
     progress = None
+    positioned = False
+    next_position = 0.0
+    position_deadline = time.monotonic() + 4
     try:
         progress = subprocess.Popen(
             ["zenity", "--progress", "--title=Wallet QR transfer", "--no-markup",
              "--text=Waiting for wallet QR frames…", "--percentage=0",
              "--width=380", "--height=120", "--auto-close"],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True)
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True,
+            env=dict(os.environ, **({"GDK_BACKEND": "x11"} if os.environ.get("DISPLAY") else {})))
         with selectors.DefaultSelector() as selector:
             selector.register(camera.stdout, selectors.EVENT_READ)
             while time.monotonic() < deadline:
                 if progress.poll() is not None:
                     raise Cancelled()
+                now = time.monotonic()
+                if not positioned and next_position <= now < position_deadline:
+                    positioned = position_counter()
+                    next_position = now + 0.2
                 if not selector.select(min(1, max(0, deadline - time.monotonic()))):
                     continue
                 chunk = os.read(camera.stdout.fileno(), MAX_FRAME + 2)
