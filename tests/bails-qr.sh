@@ -97,7 +97,7 @@ rpc -rpcwallet=online getaddressinfo "$second" | jq -e '.labels == ["Second labe
 [[ $(wallet_rpc getnewaddress) == "$(rpc -rpcwallet=online getnewaddress)" ]]
 rpc -rpcwallet=online getaddressinfo "$unlabeled" | jq -e '.labels == [""]' >/dev/null
 wallet_rpc exportwatchonlywallet "$tmp/comparison.dat" >/dev/null
-printf 'Wallet setup size: %s bytes; wallet database: %s bytes\n' "$(stat -c %s "$tmp/watch-only.json")" "$(stat -c %s "$tmp/comparison.dat")"
+printf 'Wallet transfer size: %s bytes; wallet database: %s bytes\n' "$(stat -c %s "$tmp/watch-only.dat")" "$(stat -c %s "$tmp/comparison.dat")"
 pass 'wallet QR restores labels, watch-only status and next address index'
 
 # A separate miner keeps the signing wallet small and gives it a used address.
@@ -132,17 +132,29 @@ cmp "$tmp/offline-labels" "$tmp/online-labels"
 wallet_rpc listdescriptors true >"$tmp/private-descriptors"
 python3 - "$tmp" <<'PY'
 import json, pathlib, sys
-root=pathlib.Path(sys.argv[1]); bundle=json.loads((root/'watch-only.json').read_text())
-bundle['descriptors']=json.loads((root/'private-descriptors').read_text())['descriptors']
+root=pathlib.Path(sys.argv[1])
+bundle={'format':'bails-watch-only', 'version':1, 'network':'regtest', 'labels':[],
+        'descriptors':json.loads((root/'private-descriptors').read_text())['descriptors']}
 for item in bundle['descriptors']: item.pop('next', None)
 (root/'private.json').write_text(json.dumps(bundle))
-bundle=json.loads((root/'watch-only.json').read_text()); bundle['network']='main'
+bundle=json.loads((root/'watch-only.dat').read_text()); bundle['network']='main'
 (root/'network.json').write_text(json.dumps(bundle))
 PY
 reject wallet_data import "$tmp/private.json" rejected-private "${core_args[@]}"
 reject wallet_data import "$tmp/network.json" rejected-network "${core_args[@]}"
 rpc listwallets | jq -e 'index("rejected-private") == null and index("rejected-network") == null' >/dev/null
-pass 'compact QR preserves labels, history and next index; unsafe imports rejected'
+# A full signing-wallet backup must never be accepted as a watch-only export.
+wallet_rpc backupwallet "$tmp/signing-backup.dat" >/dev/null
+python3 - "$tmp" <<'PY'
+import base64, json, pathlib, sys
+root=pathlib.Path(sys.argv[1])
+bundle={'format':'bails-watch-only', 'version':2, 'network':'regtest',
+        'wallet':base64.b64encode((root/'signing-backup.dat').read_bytes()).decode()}
+(root/'signing-envelope.json').write_text(json.dumps(bundle))
+PY
+reject wallet_data import "$tmp/signing-envelope.json" rejected-signing "${core_args[@]}"
+rpc listwallets | jq -e 'index("rejected-signing") == null' >/dev/null
+pass 'database QR preserves labels, history and next index; unsafe imports rejected'
 
 unsigned=$(rpc -rpcwallet=large -named walletcreatefundedpsbt outputs="{\"$mine\":1}" | jq -r .psbt)
 printf %s "$unsigned" | base64 -d >"$tmp/unsigned.psbt"
@@ -168,6 +180,11 @@ pass 'base64 PSBT input accepted as well as Core binary files'
 printf '%s' "bitcoin:$first?amount=0.1" | python3-qr --factory=pil >"$TEST_QR"
 scan_transfer
 grep -q 'Address belongs' "$tmp/last-dialog"
+grep -q 'Private keys: Yes' "$tmp/last-dialog"
+# Check an address in the restored watch-only wallet independently of ownership.
+wallet_data address "$first" large "${core_args[@]}" >"$tmp/watch-status"
+grep -q 'Private keys: No' "$tmp/watch-status"
+grep -q 'watch-only' "$tmp/watch-status"
 printf '%s' "$mine" | python3-qr --factory=pil >"$TEST_QR"
 reject scan_transfer
 grep -q 'does NOT belong' "$tmp/last-dialog"
@@ -263,3 +280,4 @@ pass 'Scan QR detects address and PSBT formats, redirects wallets and rejects ca
 )
 pass 'Wallet tools, Scan QR, Send transaction and Close dispatch correctly'
 echo 'All QR transfer tests passed.'
+

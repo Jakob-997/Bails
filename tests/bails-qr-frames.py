@@ -45,6 +45,15 @@ def decode(frames):
 
 
 class WalletFramesTests(unittest.TestCase):
+    def test_database_envelope_roundtrip(self):
+        database = b"SQLite format 3\0" + os.urandom(16000)
+        data = json.dumps({"format": "bails-watch-only", "version": 2, "network": "regtest",
+                           "wallet": base64.b64encode(database).decode()}).encode()
+        frames = transport.encode(data)
+        self.assertGreater(len(frames), 1)
+        restored = decode(reversed(frames))
+        self.assertEqual(base64.b64decode(json.loads(restored)["wallet"]), database)
+
     def test_real_multiframe_images(self):
         data = fixture(10000)
         frames = rendered_frames(data)
@@ -110,7 +119,8 @@ class WalletFramesTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             self.assertEqual(output.read_bytes(), data)
             self.assertNotIn("--oneshot", (directory / "args").read_text())
-            self.assertIn("100", (directory / "progress").read_text())
+            # The camera preview is no longer covered by a Zenity progress dialog.
+            self.assertFalse((directory / "progress").exists())
             output.unlink()
             camera.write_text('#!/bin/sh\nexit 0\n')
             result = subprocess.run([sys.executable, str(HELPER), "scan", str(output)], env=env, timeout=10)
@@ -129,3 +139,4 @@ if __name__ == "__main__":
         Path(sys.argv[3]).write_text("\n".join(frames) + "\n")
     else:
         unittest.main()
+

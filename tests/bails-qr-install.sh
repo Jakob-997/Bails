@@ -18,6 +18,8 @@ for target in home persistent; do
     grep -qx 'Exec=/live/persistence/TailsData_unlocked/dotfiles/.local/bin/bails-qr' \
         "$stage/$target/.local/share/applications/bails-qr.desktop"
     test -s "$stage/$target/.local/share/icons/hicolor/scalable/apps/bails-qr.svg"
+    test -s "$stage/$target/.local/share/icons/hicolor/scalable/apps/bails-wallet-tools.svg"
+    test -s "$stage/$target/.local/share/icons/hicolor/scalable/apps/bails-send.svg"
 done
 # Missing/broken QR support must stop installation before its first copy.
 # shellcheck disable=SC2016
@@ -44,3 +46,4 @@ if check_runtime; then
     exit 1
 fi
 echo 'PASS: installed QR runtime, launcher, menu, icon and failed-encoder check'
+

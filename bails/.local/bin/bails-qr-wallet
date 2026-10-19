@@ -18,8 +18,10 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-"""Public descriptor and address-label transfer. See bails-qr for MIT license."""
+"""Core watch-only database transfer, with legacy public JSON import."""
 import json
+import base64
+import binascii
 from pathlib import Path
 import subprocess
 import sys
@@ -72,7 +74,7 @@ def transfer(action, path, wallet, flags):
         command = ["bitcoin-cli", *flags]
         if selected is not None:
             command.append("-rpcwallet=" + selected)
-        if method == "importdescriptors":
+        if method in ("importdescriptors", "getdescriptorinfo"):
             command.extend(["-stdin", method])
             result = subprocess.run(command, input=args[0] + "\n", text=True, capture_output=True)
         else:
@@ -82,23 +84,88 @@ def transfer(action, path, wallet, flags):
         return json.loads(result.stdout) if result.stdout.strip() else None
 
     network = rpc("getblockchaininfo")["chain"]
+    if action == "address":
+        info = rpc("getaddressinfo", path, selected=wallet)
+        if not (info.get("ismine") or info.get("iswatchonly")):
+            print("Address does NOT belong to the selected wallet:\n" + path)
+            return
+        status = rpc("getwalletinfo", selected=wallet)
+        message = "Address belongs to the selected wallet:\n" + path + "\n\n"
+        if status.get("private_keys_enabled") is False:
+            message += "Private keys: No. This is a watch-only wallet; it cannot sign or spend."
+        elif status.get("unlocked_until") == 0:
+            message += "Private keys: Not checked. Unlock this wallet in Bitcoin Core and scan again."
+        elif status.get("descriptors") and not info.get("parent_desc"):
+            message += "Private keys: Not checked. Core did not identify the parent descriptor for this address."
+        elif status.get("descriptors"):
+            parent = info.get("parent_desc")
+            found = False
+            for item in rpc("listdescriptors", "true", selected=wallet)["descriptors"]:
+                details = rpc("getdescriptorinfo", item["desc"])
+                if details["descriptor"] == parent and details["hasprivatekeys"]:
+                    found = True
+                    break
+            if found:
+                message += ("Private keys: Yes, this wallet has signing key material for this address. "
+                            "Multisig or other spending conditions may require additional keys or conditions.")
+            else:
+                message += "Private keys: No signing key found for this address. It is watch-only in this wallet."
+        elif info.get("ismine") and not info.get("iswatchonly"):
+            message += "Private keys: Yes, Bitcoin Core identifies this address as spendable by this wallet."
+        else:
+            message += "Private keys: No. This address is watch-only in this wallet."
+        print(message + "\n\nThis does not verify a payment amount or an available balance.")
+        return
     if action == "export":
-        descriptors = rpc("listdescriptors", "false", selected=wallet)["descriptors"]
-        descriptors = [{key: value for key, value in item.items() if key != "next"}
-                       for item in descriptors]
-        labels = []
-        for label in rpc("listlabels", selected=wallet):
-            addresses = rpc("getaddressesbylabel", label, selected=wallet)
-            labels.extend({"type": "addr", "ref": address, "label": label} for address in addresses)
-        bundle = {"format": "bails-watch-only", "version": 1, "network": network,
-                  "descriptors": descriptors, "labels": labels}
-        data = json.dumps(bundle, ensure_ascii=False, separators=(",", ":")).encode()
-        validate(data)
-        Path(path).write_bytes(data)
+        # Never copy/backup the signing wallet: Core strips its private keys.
+        database = Path(path).with_suffix(".core.dat")
+        try:
+            rpc("exportwatchonlywallet", str(database.resolve()), selected=wallet)
+            with database.open("rb") as source:
+                raw = source.read(MAX_FILE + 1)
+            if not raw.startswith(b"SQLite format 3\0"):
+                raise ValueError("Core did not export a SQLite watch-only wallet.")
+            data = json.dumps({"format": "bails-watch-only", "version": 2, "network": network,
+                               "wallet": base64.b64encode(raw).decode("ascii")},
+                              separators=(",", ":")).encode()
+            if len(data) > MAX_FILE:
+                raise ValueError("Watch-only wallet export exceeds the 1 MiB QR limit.")
+            Path(path).write_bytes(data)
+        finally:
+            database.unlink(missing_ok=True)
         return
 
     with open(path, "rb") as source:
-        bundle = validate(source.read(MAX_FILE + 1))
+        data = source.read(MAX_FILE + 1)
+    if len(data) > MAX_FILE:
+        raise ValueError("Wallet export exceeds 1 MiB.")
+    bundle = json.loads(data)
+    if isinstance(bundle, dict) and bundle.get("format") == "bails-watch-only" and bundle.get("version") == 2:
+        if bundle.get("network") != network:
+            raise ValueError("Wallet setup belongs to a different Bitcoin network.")
+        try:
+            raw = base64.b64decode(bundle["wallet"], validate=True)
+        except (binascii.Error, KeyError, TypeError):
+            raise ValueError("Invalid watch-only wallet database encoding.") from None
+        if not raw.startswith(b"SQLite format 3\0"):
+            raise ValueError("Expected a Core watch-only wallet database.")
+        database = Path(path).with_suffix(".received.dat")
+        try:
+            database.write_bytes(raw)
+            rpc("restorewallet", wallet, str(database.resolve()), "false")
+        finally:
+            database.unlink(missing_ok=True)
+        try:
+            if rpc("getwalletinfo", selected=wallet).get("private_keys_enabled") is not False:
+                raise ValueError("Received wallet is not watch-only; refusing to use it.")
+            if any(rpc("getdescriptorinfo", item["desc"])["hasprivatekeys"]
+                   for item in rpc("listdescriptors", "true", selected=wallet)["descriptors"]):
+                raise ValueError("Received wallet contains private keys; refusing to use it.")
+        except (ValueError, KeyError, TypeError):
+            rpc("unloadwallet", wallet, "false")
+            raise
+        return
+    bundle = validate(data)
     if bundle["network"] != network:
         raise ValueError("Wallet setup belongs to a different Bitcoin network.")
     for item in bundle["descriptors"]:
@@ -119,9 +186,10 @@ def transfer(action, path, wallet, flags):
 
 if __name__ == "__main__":
     try:
-        if len(sys.argv) < 4 or sys.argv[1] not in ("export", "import"):
-            raise ValueError("Usage: bails-qr-wallet export|import FILE WALLET [CORE FLAGS]")
+        if len(sys.argv) < 4 or sys.argv[1] not in ("export", "import", "address"):
+            raise ValueError("Usage: bails-qr-wallet export|import|address FILE_OR_ADDRESS WALLET [CORE FLAGS]")
         transfer(*sys.argv[1:4], sys.argv[4:])
     except (ValueError, OSError, KeyError, TypeError) as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)
+

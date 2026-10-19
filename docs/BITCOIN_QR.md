@@ -4,12 +4,12 @@ A small Bash/Zenity program for exchanging Bitcoin Core wallet data between
 online and offline computers. A small Python helper displays and collects fixed
 BBQr wallet frames using the QR and GTK modules already required on Tails 7.
 
-## Try the testing branch
+## Update and test the fork
 
 On Tails, install the complete fork (including Bitcoin Core and QR transfer):
 
 ```sh
-git clone --branch zenity-qr-mvp https://github.com/Jakob-997/Bails.git bails-qr-test
+git clone --branch master https://github.com/Jakob-997/Bails.git bails-qr-test
 bash bails-qr-test/b
 ```
 
@@ -42,7 +42,10 @@ to use a test node. `--check` tests the QR runtime without opening the menu.
 
 - **Scan QR** — import a transaction (PSBT) or verify a receive address. The
   program recognizes an address/BIP21 URI or a PSBT automatically. For an address,
-  select the loaded wallet to check; Core's `getaddressinfo` supplies `ismine`.
+  select the loaded wallet to check. The result separately reports ownership
+  and whether the wallet has signing key material for that address. Locked
+  wallets must be unlocked in Core before checking their keys. Multisig or
+  other spending conditions may still require additional keys or conditions.
   For a PSBT, choose a new filename, then open it in Core using **File → Load PSBT
   from file**. Offline, review and sign. Online, review the returned signed
   transaction before broadcasting in Core.
@@ -51,26 +54,26 @@ to use a test node. `--check` tests the QR runtime without opening the menu.
   This action only displays the QR.
 - **Wallet tools** opens the less frequent setup actions: **Export watch-only
   wallet** on the offline computer, or **Receive watch-only wallet** online.
-  Export creates one compact JSON file containing public descriptors, their
-  ranges and next address indexes, and BIP329-style address/label records
-  (including empty labels). It excludes the wallet database and private keys.
-  Compressed data cycles through smaller numbered QR frames. Receive opens
-  the camera immediately, then asks for a new wallet name and imports directly
-  into a fresh, blank wallet with private keys disabled. Core rescans from the
-  descriptor timestamps to recover used-address history; historical blocks must
-  be available. Update both computers before transferring wallets.
+  Export calls Core's `exportwatchonlywallet`, preserving saved addresses,
+  labels, transaction history, and address indexes while Core removes private
+  keys. A version 2 JSON envelope carries the database and Bitcoin network.
+  The envelope is compressed and cycles through numbered QR frames. Receive
+  opens the camera, asks for a new wallet name, and calls Core's `restorewallet`.
+  It checks that the restored wallet has private keys disabled and no private
+  descriptors. The source wallet must already know the history you want to
+  transfer; synchronization may still be needed for newer transactions.
+  Update both computers before transferring wallets. Older version 1 descriptor
+  bundles remain importable and require historical blocks for rescanning.
 
-The native Zenity menu uses compact single-click action buttons and short
-explanations above them. Wallet tools provides the less frequent watch-only
-setup actions. The dialog displays the bundled QR icon using its installed file
-path, so it does not depend on finding that icon in the desktop theme cache.
-Scan QR uses a camera symbol when an emoji font is available and a plain
-label otherwise, avoiding missing-glyph boxes. Close and Escape exit the menu. Previews show the actual Zenity dialog; its
-appearance can vary with the installed Tails theme.
+The Zenity menus use image rows with bundled SVG icons, independent of emoji
+fonts or the icon theme cache. Select an action and click **Open**, or
+double-click its row. **Close** and Escape exit the main menu.
 
 Scan QR opens the camera immediately. Send transaction opens the file picker
 immediately. Wallet export opens its QR window after wallet selection, without
-a confirmation screen. Close the camera or wallet progress window to cancel.
+a confirmation screen. Close the camera window to cancel. Wallet scanning uses
+brief desktop progress notifications when available, without a persistent
+instructions dialog covering the camera preview.
 Transaction/address scans time out after two minutes; wallet scans after five.
 Transaction QR images open in a separate viewer; close it after scanning.
 Received files are saved only to a user-selected new path; existing files and
@@ -98,13 +101,16 @@ symlinks are never overwritten.
   never evaluated as shell code and scanned URLs are never opened. The helper
   does not unlock wallets, sign transactions or broadcast transactions.
 - A wallet export scanned from the main screen directs the user to Wallet tools.
-  Wallet setup metadata and network are validated before creating a wallet;
-  Core validates descriptors and rejects private keys. Import never replaces
-  an existing wallet. An unsuccessful rescan/import can leave a partial new
-  wallet: inspect the error in Core before retrying with another name.
-- The address check verifies ownership only. It ignores BIP21 payment parameters
-  and does not prove the selected wallet can sign. Control/binary bytes in an
-  address payload are rejected instead of silently removed.
+  Network and encoding are checked before restoration. Core parses the database;
+  a restored wallet that fails the watch-only checks is unloaded and rejected.
+  Restored wallets are not automatically loaded at startup. Import never
+  replaces an existing wallet. A failed import can leave a wallet directory:
+  inspect the error in Core before retrying with another name.
+- The address check separately reports ownership and signing key availability.
+  Private descriptors are passed to Core through standard input, not process
+  arguments. This is not proof that every multisig key or spending condition is
+  satisfied. BIP21 amounts and balances are not checked. Control/binary bytes
+  in an address payload are rejected instead of silently removed.
 - Exported wallet data is private financial metadata. Temporary files are kept
   with restrictive permissions under `/tmp`, which is memory-backed on Tails,
   and removed on normal exit/signals. The program does not enforce the air gap;
@@ -118,6 +124,7 @@ shellcheck bails/.local/bin/bails-qr tests/bails-qr.sh
 bash tests/bails-qr.sh
 bash tests/bails-qr-install.sh
 python3 tests/bails-qr-frames.py
+python3 tests/bails-qr-wallet.py
 desktop-file-validate bails/.local/share/applications/bails-qr.desktop
 git diff --check
 ```
@@ -128,9 +135,10 @@ signed PSBT transfer, automatic format detection, address ownership, malformed
 input, size limits, cancellation, camera failure, overwrite/symlink protection,
 and Zenity menu dispatch, including nonzero extra-button status. Multipart tests
 cover real frame images, out-of-order/repeated/missed parts, compression bounds,
-camera completion/cancellation, and byte-identical setup transfer, label preservation and Core history reconstruction.
+camera completion/cancellation, and byte-identical setup transfer, label preservation and Core history restoration.
 
 Before deployment, test on current stable Tails with real webcams: launcher and
 menu appearance, themed icons, camera cancellation/timeout, full-size image
 scanning, wallet restoration, encrypted-wallet signing, and both transfer
 directions. Headless integration tests do not replace those checks.
+

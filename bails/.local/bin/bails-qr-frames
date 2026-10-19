@@ -18,7 +18,7 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-"""Bounded, fixed-frame BBQr wallet transport. Compact public descriptors and labels rebuild the wallet."""
+"""Bounded, fixed-frame BBQr wallet transport. Core watch-only databases preserve wallet state."""
 
 import base64
 import io
@@ -28,6 +28,7 @@ import os
 from pathlib import Path
 import re
 import selectors
+import shutil
 import subprocess
 import sys
 import time
@@ -196,17 +197,12 @@ def scan(path):
     buffer = bytearray()
     deadline = time.monotonic() + SCAN_SECONDS
     lines = 0
-    progress = None
+    notification = None
+    last_notice = 0.0
     try:
-        progress = subprocess.Popen(["zenity", "--progress", "--title=Receive watch-only wallet",
-                                     "--text=Point the camera at the wallet QR", "--percentage=0", "--auto-close"],
-                                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                    text=True)
         with selectors.DefaultSelector() as selector:
             selector.register(camera.stdout, selectors.EVENT_READ)
             while time.monotonic() < deadline:
-                if progress.poll() is not None:
-                    raise Cancelled()
                 if not selector.select(min(1, max(0, deadline - time.monotonic()))):
                     continue
                 chunk = os.read(camera.stdout.fileno(), MAX_FRAME + 2)
@@ -222,12 +218,15 @@ def scan(path):
                     if lines > 8192:
                         raise ValueError("Too many QR frames received. Restart the transfer.")
                     data = receiver.add(frame.decode("ascii"))
-                    try:
-                        progress.stdin.write(f"# {len(receiver.parts)} of {receiver.count} QR frames received\n"
-                                             f"{100 * len(receiver.parts) // receiver.count}\n")
-                        progress.stdin.flush()
-                    except BrokenPipeError:
-                        raise Cancelled() from None
+                    # Keep the camera preview clear; close its window to cancel.
+                    if time.monotonic() - last_notice >= 5 and shutil.which("notify-send"):
+                        if notification is None or notification.poll() is not None:
+                            notification = subprocess.Popen(
+                                ["notify-send", "--expire-time=2000", "Receive watch-only wallet",
+                                 f"{len(receiver.parts)} of {receiver.count} QR frames received. "
+                                 "Close the camera window to cancel."],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            last_notice = time.monotonic()
                     if data is not None:
                         Path(path).write_bytes(data)
                         return
@@ -235,15 +234,8 @@ def scan(path):
                     raise ValueError("QR frame is too large.")
         raise ValueError("Wallet scan timed out. Try again with the camera closer to the screen.")
     finally:
-        if progress is not None:
-            try:
-                progress.stdin.close()
-            except BrokenPipeError:
-                pass
-            try:
-                progress.wait(timeout=0.2)
-            except subprocess.TimeoutExpired:
-                stop(progress)
+        if notification is not None:
+            stop(notification)
         stop(camera)
         camera.stdout.close()
 
@@ -269,3 +261,4 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+

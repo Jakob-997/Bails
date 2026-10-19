@@ -82,10 +82,10 @@ show_qr() {
 
 export_wallet() {
     choose_wallet || return 1
-    wallet_data export "$tmp/watch-only.json" "$wallet" "${core_args[@]}" 2>"$tmp/frames-error" || {
+    wallet_data export "$tmp/watch-only.dat" "$wallet" "${core_args[@]}" 2>"$tmp/frames-error" || {
         fail "$(cat "$tmp/frames-error")"; return 1;
     }
-    wallet_frames show "$tmp/watch-only.json" 2>"$tmp/frames-error" || {
+    wallet_frames show "$tmp/watch-only.dat" 2>"$tmp/frames-error" || {
         fail "$(cat "$tmp/frames-error")"; return 1;
     }
 }
@@ -152,15 +152,13 @@ check_address() {
     address=${address#bitcoin:}
     address=${address%%\?*}
     [[ $address =~ ^[a-zA-Z0-9]{14,100}$ ]] || { fail 'Expected a Bitcoin address QR.'; return 1; }
-    info=$(wallet_rpc getaddressinfo "$address") || { fail 'Bitcoin Core rejected this address for the current network.'; return 1; }
-    if python3 -c 'import json, sys; sys.exit(0 if json.load(sys.stdin).get("ismine") is True else 1)' <<<"$info"; then
-        dialog --info --no-markup --text="Address belongs to the selected wallet:
-$address
-
-This checks ownership only, not a payment amount or whether the wallet can sign."
+    info=$(wallet_data address "$address" "$wallet" "${core_args[@]}" 2>"$tmp/frames-error") || {
+        fail "$(cat "$tmp/frames-error")"; return 1;
+    }
+    if [[ $info == 'Address does NOT belong'* ]]; then
+        fail "$info"
     else
-        fail "Address does NOT belong to the selected wallet:
-$address"
+        dialog --info --no-markup --text="$info"
     fi
 }
 
@@ -191,37 +189,32 @@ scan_transfer() {
 wallet_tools() {
     local action icon
     icon="$(dirname -- "${BASH_SOURCE[0]}")/../share/icons/hicolor/scalable/apps/bails-qr.svg"
-    action=$(dialog --question --switch --icon="$icon" --width=420 --title='Wallet tools' \
+    action=$(dialog --list --imagelist --column=Icon --column=Action --hide-header --print-column=2 \
+        --ok-label=Open --cancel-label=Back --title='Wallet tools' \
         --text='Set up the online watch-only wallet.' \
-        --extra-button='←  Back' --extra-button='↙  Receive watch-only wallet' \
-        --extra-button='↗  Export watch-only wallet') || :
+        "$icon" 'Export watch-only wallet' \
+        "$icon" 'Receive watch-only wallet') || :
     case "$action" in
-        '↗  Export watch-only wallet') export_wallet ;;
-        '↙  Receive watch-only wallet') receive_wallet ;;
+        'Export watch-only wallet'|'↗  Export watch-only wallet') export_wallet ;;
+        'Receive watch-only wallet'|'↙  Receive watch-only wallet') receive_wallet ;;
     esac
 }
 
 transfer_menu() {
-    local action icon scan_label='Scan QR' send_label='↗  Send transaction' tools_label='Wallet tools'
+    local action icon
     icon="$(dirname -- "${BASH_SOURCE[0]}")/../share/icons/hicolor/scalable/apps/bails-qr.svg"
-    # Keep the label readable if the desktop has no camera/emoji font.
-    if command -v fc-match >/dev/null && fc-match -f '%{family}' ':charset=1f4f7' | grep -qi emoji; then
-        scan_label='📷  Scan QR'
-        send_label='📤  Send transaction'
-        tools_label='🔧  Wallet tools'
-    fi
     while true; do
-        action=$(dialog --question --switch --icon="$icon" --width=420 \
+        action=$(dialog --list --imagelist --column=Icon --column=Action --hide-header --print-column=2 \
+            --ok-label=Open --cancel-label=Close \
             --text='Scan to import a transaction or verify an address.
 Send to show a transaction QR.
 Wallet tools sets up a watch-only wallet.' \
-            --extra-button='Close' --extra-button="$tools_label" \
-            --extra-button="$send_label" --extra-button="$scan_label") || :
-        # Zenity extra buttons return their label even with a nonzero status.
+            "$icon" 'Scan QR' "${icon%/*}/bails-send.svg" 'Send transaction' \
+            "${icon%/*}/bails-wallet-tools.svg" 'Wallet tools') || :
         case "$action" in
-            '📷  Scan QR'|'Scan QR') scan_transfer ;;
-            '📤  Send transaction'|'↗  Send transaction') send_psbt ;;
-            '🔧  Wallet tools'|'Wallet tools') wallet_tools ;;
+            '▦  Scan QR'|'📷  Scan QR'|'Scan QR') scan_transfer ;;
+            'Send transaction'|'📤  Send transaction'|'↗  Send transaction') send_psbt ;;
+            '⚙  Wallet tools'|'🔧  Wallet tools'|'Wallet tools') wallet_tools ;;
             *) return 0 ;;
         esac
     done
@@ -256,3 +249,4 @@ main() {
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
+
