@@ -69,12 +69,13 @@ class WalletFramesTests(unittest.TestCase):
                         patch.object(transport.subprocess, "Popen", side_effect=spawn), \
                         patch.object(transport.selectors, "DefaultSelector") as selector, \
                         patch.object(transport.os, "read", side_effect=[data, b""]), \
-                        patch.object(transport, "position_counter", return_value=True) as position, \
+                        patch.object(transport, "position_counter", side_effect=[False, True]) as position, \
+                        patch.object(transport.time, "monotonic", side_effect=range(0, 1000, 10)), \
                         patch.object(transport, "scan") as receive:
                     selector.return_value.__enter__.return_value.select.return_value = [True]
                     transport.scan_any(output)
                     self.assertEqual(events, ["counter", "camera"])
-                    position.assert_called_once()
+                    self.assertEqual(position.call_count, 2)
                     if data.startswith(b"B$"):
                         receive.assert_called_once_with(output, "P", output, progress)
                     else:
@@ -159,13 +160,11 @@ class WalletFramesTests(unittest.TestCase):
         self.assertEqual(transport.side_positions((360, 100, 640, 480), (0, 0, 380, 120), (1366, 768)),
                          ((16, 100), (672, 100)))
         self.assertEqual(transport.side_positions((200, 100, 640, 480), (0, 0, 380, 120), (1024, 768)),
-                         (None, (200, 596)))
+                         (None, (200, 628)))
         self.assertIsNone(transport.side_positions((0, 0, 640, 480), (0, 0, 380, 120), (640, 480)))
 
     def test_x11_placement_requests_nonoverlapping_window_positions(self):
         import ctypes
-        tree = ('  0x101 "zbar barcode reader": () 640x480+0+0 +360+100\n'
-                '  0x102 "Wallet QR transfer": () 380x120+0+0 +500+400\n')
         lib = MagicMock()
         lib.XOpenDisplay.return_value = 1
         lib.XDefaultRootWindow.return_value = 10
@@ -178,16 +177,54 @@ class WalletFramesTests(unittest.TestCase):
             moves.append((event.window, event.data.l[1], event.data.l[2]))
             return 1
         lib.XSendEvent.side_effect = sent
-        replies = [subprocess.CompletedProcess([], 0, tree, ""),
-                   subprocess.CompletedProcess([], 0, "Width: 1366\nHeight: 768\n", "")]
+        lib.XDisplayWidth.return_value = 1366
+        lib.XDisplayHeight.return_value = 768
+        windows = {"camera": [(0x101, (360, 100, 640, 480))],
+                   "counter": [(0x102, (500, 400, 380, 120))]}
         with patch.dict(os.environ, {"DISPLAY": ":test"}), \
-                patch.object(transport.shutil, "which", return_value="/usr/bin/xwininfo"), \
-                patch.object(transport.subprocess, "run", side_effect=replies), \
+                patch.object(transport, "x11_scan_windows", return_value=windows), \
                 patch("ctypes.util.find_library", return_value="test-X11"), \
                 patch.object(ctypes, "CDLL", return_value=lib):
+            # An accepted request does not establish that the WM moved anything.
+            self.assertFalse(transport.position_counter())
+            windows["camera"] = [(0x101, (16, 100, 640, 480))]
+            windows["counter"] = [(0x102, (672, 100, 380, 120))]
             self.assertTrue(transport.position_counter())
         self.assertEqual(moves, [(0x101, 16, 100), (0x102, 672, 100)])
-        lib.XCloseDisplay.assert_called_once_with(1)
+        self.assertEqual(lib.XCloseDisplay.call_count, 2)
+
+    def test_native_window_discovery_finds_reparented_clients_without_xwininfo(self):
+        import ctypes as C
+        lib = MagicMock()
+        keep = []
+        titles = {11: "zbar barcode reader", 12: "Wallet QR transfer"}
+        def name(_display, window, pointer):
+            if window not in titles:
+                return 0
+            value = C.create_string_buffer(titles[window].encode())
+            keep.append(value)
+            pointer._obj.value = C.addressof(value)
+            return 1
+        def tree(_display, window, _root, _parent, children, count):
+            items = {1: [2], 2: [11, 12]}.get(window, [])
+            value = (C.c_ulong * len(items))(*items)
+            keep.append(value)
+            C.cast(children, C.POINTER(C.POINTER(C.c_ulong)))[0] = C.cast(value, C.POINTER(C.c_ulong))
+            count._obj.value = len(items)
+            return 1
+        def geometry(_display, window, _root, _x, _y, width, height, _border, _depth):
+            width._obj.value, height._obj.value = (640, 480) if window == 11 else (380, 120)
+            return 1
+        def translate(_display, window, _root, _x, _y, ax, ay, _child):
+            ax._obj.value, ay._obj.value = (16, 100) if window == 11 else (672, 100)
+            return 1
+        lib.XFetchName.side_effect = name
+        lib.XQueryTree.side_effect = tree
+        lib.XGetGeometry.side_effect = geometry
+        lib.XTranslateCoordinates.side_effect = translate
+        found = transport.x11_scan_windows(lib, 1, 1)
+        self.assertEqual(found, {"camera": [(11, (16, 100, 640, 480))],
+                                 "counter": [(12, (672, 100, 380, 120))]})
 
     def test_counter_cancellation_stops_camera(self):
         camera, progress = MagicMock(), MagicMock()
