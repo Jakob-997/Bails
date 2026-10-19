@@ -89,8 +89,11 @@ errors must not silently return success without showing a window.
 
 Scan QR opens the camera immediately. Send transaction opens the file picker
 immediately. Wallet export opens its QR window after wallet selection, without
-a confirmation screen. Wallet scanning shows a small **Wallet QR transfer**
-Zenity window with the number of frames received and a progress bar. Close
+a confirmation screen. Both Scan QR and wallet scanning show a small
+**Wallet QR transfer** Zenity window immediately, before a frame is detected.
+It initially says zero received with the total unknown, then shows X of Y
+once an animated transfer is detected. The same counter stays open when
+the transaction camera switches to continuous reception. Close
 the camera window or click **Cancel** in the counter window to cancel.
 On X11/XWayland, the receiver attempts to place the counter beside the ZBar
 preview using existing `xwininfo` and Xlib/EWMH window-manager interfaces. It

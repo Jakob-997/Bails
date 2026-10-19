@@ -49,6 +49,52 @@ def decode(frames):
 
 
 class WalletFramesTests(unittest.TestCase):
+    def test_initial_counter_precedes_camera_and_reuses_for_psbt(self):
+        for data in (b"psbt\xff\x00\n\x01", transport.encode(b"psbt\xff" + b"x" * 2000, "P")[0].encode()):
+            events = []
+            progress, camera = MagicMock(), MagicMock()
+            progress.poll.return_value = None
+            camera.wait.return_value = 0
+            camera.poll.return_value = 0
+            def counter():
+                events.append("counter")
+                return progress
+            def spawn(*args, **kwargs):
+                events.append("camera")
+                self.assertIn("--oneshot", args[0])
+                return camera
+            with tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "scan"
+                with patch.object(transport, "open_counter", side_effect=counter), \
+                        patch.object(transport.subprocess, "Popen", side_effect=spawn), \
+                        patch.object(transport.selectors, "DefaultSelector") as selector, \
+                        patch.object(transport.os, "read", side_effect=[data, b""]), \
+                        patch.object(transport, "position_counter", return_value=True) as position, \
+                        patch.object(transport, "scan") as receive:
+                    selector.return_value.__enter__.return_value.select.return_value = [True]
+                    transport.scan_any(output)
+                    self.assertEqual(events, ["counter", "camera"])
+                    position.assert_called_once()
+                    if data.startswith(b"B$"):
+                        receive.assert_called_once_with(output, "P", output, progress)
+                    else:
+                        receive.assert_not_called()
+                    self.assertEqual(output.read_bytes(), data)
+                progress.stdin.close.assert_called_once()
+                camera.stdout.close.assert_called_once()
+
+    def test_initial_counter_cancel_stops_camera(self):
+        progress, camera = MagicMock(), MagicMock()
+        progress.poll.return_value = 0
+        camera.poll.return_value = None
+        with patch.object(transport, "open_counter", return_value=progress), \
+                patch.object(transport.subprocess, "Popen", return_value=camera), \
+                patch.object(transport.selectors, "DefaultSelector"):
+            with self.assertRaises(transport.Cancelled):
+                transport.scan_any("unused")
+        camera.terminate.assert_called_once()
+        camera.stdout.close.assert_called_once()
+
     def test_reference_psbt_vectors_and_compression_limits(self):
         bundle = json.loads((ROOT / "tests/fixtures/bbqr-psbt.json").read_text())
         for frames in bundle["vectors"]:

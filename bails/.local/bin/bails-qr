@@ -69,16 +69,10 @@ for i, name in enumerate(json.load(sys.stdin)):
 
 # Keep binary data in files, never shell variables. Raw oneshot has no delimiter.
 scan() {
-    if ! timeout 120 zbarcam --nodbus --raw -Sdisable -Sqrcode.enable -Sbinary --oneshot 2>"$tmp/camera-error" |
-        head -c 4297 >"$tmp/scan"; then
-        fail 'No QR code received. Check the camera and try again.'; return 1
-    fi
-    local size
-    size=$(stat -c %s "$tmp/scan")
-    if ((size < 1 || size > 4296)) ||
-        { ((size > 2953)) && ! LC_ALL=C grep -Eq '^B\$[H2Z][A-Z]' "$tmp/scan"; }; then
-        fail 'The QR code is empty or too large.'; return 1
-    fi
+    local status=0
+    wallet_frames scan-any "$tmp/scan" 2>"$tmp/camera-error" || status=$?
+    ((status != 2)) || return 1
+    ((status == 0)) || { fail "$(cat "$tmp/camera-error")"; return 1; }
 }
 
 unpack() {

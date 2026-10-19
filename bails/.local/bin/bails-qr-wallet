@@ -138,7 +138,8 @@ def search_wallets(rpc, address, progress=lambda _message: None):
                    "this address is yours, verify it on your offline signer before receiving funds. "
                    "An unexpected mismatch can indicate the wrong wallet, an altered address, or "
                    "compromised software. This result alone does not prove compromise.")
-    text = heading + "\n" + address + "\n\n" + "\n\n".join(matches)
+    display_address = address.lower() if address.lower().startswith(("bc1", "tb1", "bcrt1")) else address
+    text = heading + "\n" + display_address + "\n\n" + "\n\n".join(matches)
     if errors:
         text += "\n\nIncomplete check:\n" + "\n".join(errors)
     return text + "\n\nThis checks signing keys, not payment amounts or balances. No transaction was signed."

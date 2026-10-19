@@ -164,6 +164,13 @@ class WalletTests(unittest.TestCase):
         self.assertIn("This wallet has the key needed to spend", output.getvalue())
         self.assertIn("Address ownership: confirmed", output.getvalue())
 
+    def test_search_display_lowercases_bech32_and_preserves_base58(self):
+        for address, expected in ((ADDRESS.upper(), ADDRESS.lower()),
+                                  ("1CaseSensitiveAddress", "1CaseSensitiveAddress")):
+            with contextlib.redirect_stdout(io.StringIO()):
+                wallet.transfer("address-all", address, str(self.path), [])
+            self.assertIn("\n" + expected + "\n", self.path.read_text(encoding="utf-8"))
+
     def test_base58_is_not_blindly_case_folded(self):
         self.info["address"] = "1CaseSensitiveAddress"
         self.derived = ["1casesensitiveaddress"]

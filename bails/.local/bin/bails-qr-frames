@@ -266,7 +266,7 @@ def show(path, file_type="J"):
     picture.set_hexpand(True)
     picture.set_vexpand(True)
     label = Gtk.Label()
-    scope = Gtk.Label(label=("BBQr PSBT · Scan with Sparrow or the other computer."
+    scope = Gtk.Label(label=("BBQr PSBT · Scan with the other computer."
                             if file_type == "P" else
                             "Public descriptors and address labels only.\n"
                             "Saved receive-request messages, amounts and dates are not included."),
@@ -323,7 +323,76 @@ def show(path, file_type="J"):
         raise ValueError("QR display failed: " + errors[0])
 
 
-def scan(path, file_type="J", initial=None):
+def open_counter(text="Waiting for QR frames. 0 received; total not known yet."):
+    return subprocess.Popen(
+            ["zenity", "--progress", "--title=Wallet QR transfer", "--no-markup",
+             "--text=" + text, "--percentage=0",
+             "--width=380", "--height=120", "--auto-close"],
+            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True,
+            env=dict(os.environ, **({"GDK_BACKEND": "x11"} if os.environ.get("DISPLAY") else {})))
+
+
+def close_counter(progress):
+    try:
+        progress.stdin.close()
+    except BrokenPipeError:
+        pass
+    try:
+        progress.wait(timeout=0.2)
+    except subprocess.TimeoutExpired:
+        stop(progress)
+
+
+def scan_any(path):
+    """Show progress immediately while retaining binary oneshot framing."""
+    progress = open_counter()
+    camera = None
+    try:
+        camera = subprocess.Popen(
+            ["zbarcam", "--nodbus", "--raw", "-Sdisable", "-Sqrcode.enable", "-Sbinary", "--oneshot"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        first = bytearray()
+        deadline = time.monotonic() + 120
+        positioned, next_position = False, 0.0
+        position_deadline = time.monotonic() + 4
+        with selectors.DefaultSelector() as selector:
+            selector.register(camera.stdout, selectors.EVENT_READ)
+            while time.monotonic() < deadline:
+                if progress.poll() is not None:
+                    raise Cancelled()
+                now = time.monotonic()
+                if not positioned and next_position <= now < position_deadline:
+                    positioned = position_counter()
+                    next_position = now + 0.2
+                if not selector.select(0.2):
+                    continue
+                chunk = os.read(camera.stdout.fileno(), MAX_FRAME + 1)
+                if not chunk:
+                    if camera.wait() != 0:
+                        raise ValueError("No QR code received. Check the camera and try again.")
+                    break
+                first.extend(chunk)
+                if len(first) > MAX_FRAME:
+                    raise ValueError("The QR code is too large.")
+            else:
+                raise ValueError("QR scan timed out. Try again.")
+        stop(camera)
+        camera.stdout.close()
+        camera = None
+        if not first or (len(first) > 2953 and not re.match(rb"B\$[H2Z][A-Z]", first)):
+            raise ValueError("The QR code is empty or too large.")
+        Path(path).write_bytes(first)
+        if re.match(rb"B\$[H2Z]P", first):
+            scan(path, "P", path, progress)
+    finally:
+        if camera is not None:
+            stop(camera)
+            camera.stdout.close()
+        close_counter(progress)
+
+
+def scan(path, file_type="J", initial=None, progress=None):
+    own_progress = progress is None
     receiver = Receiver(file_type)
     if initial is not None:
         with open(initial, "rb") as source:
@@ -341,19 +410,15 @@ def scan(path, file_type="J", initial=None):
     buffer = bytearray()
     deadline = time.monotonic() + SCAN_SECONDS
     lines = 0
-    progress = None
     positioned = False
     next_position = 0.0
     position_deadline = time.monotonic() + 4
     try:
-        progress = subprocess.Popen(
-            ["zenity", "--progress", "--title=Wallet QR transfer", "--no-markup",
-             "--text=" + (f"{len(receiver.parts)} of {receiver.count} QR frames received"
-                           if receiver.count else "Waiting for wallet QR frames…"),
-             f"--percentage={100 * len(receiver.parts) // receiver.count if receiver.count else 0}",
-             "--width=380", "--height=120", "--auto-close"],
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, text=True,
-            env=dict(os.environ, **({"GDK_BACKEND": "x11"} if os.environ.get("DISPLAY") else {})))
+        if progress is None:
+            progress = open_counter()
+        if receiver.count:
+            progress.stdin.write(f"# {len(receiver.parts)} of {receiver.count} QR frames received\n")
+            progress.stdin.flush()
         with selectors.DefaultSelector() as selector:
             selector.register(camera.stdout, selectors.EVENT_READ)
             while time.monotonic() < deadline:
@@ -392,15 +457,8 @@ def scan(path, file_type="J", initial=None):
                     raise ValueError("QR frame is too large.")
         raise ValueError("QR scan timed out. Try again with the camera closer to the screen.")
     finally:
-        if progress is not None:
-            try:
-                progress.stdin.close()
-            except BrokenPipeError:
-                pass
-            try:
-                progress.wait(timeout=0.2)
-            except subprocess.TimeoutExpired:
-                stop(progress)
+        if own_progress and progress is not None:
+            close_counter(progress)
         stop(camera)
         camera.stdout.close()
 
@@ -412,12 +470,14 @@ def main():
             gtk_modules()
         elif len(sys.argv) == 3 and sys.argv[1] in ("show", "scan"):
             (show if sys.argv[1] == "show" else scan)(sys.argv[2])
+        elif len(sys.argv) == 3 and sys.argv[1] == "scan-any":
+            scan_any(sys.argv[2])
         elif len(sys.argv) == 3 and sys.argv[1] == "show-psbt":
             show(sys.argv[2], "P")
         elif len(sys.argv) in (3, 4) and sys.argv[1] == "scan-psbt":
             scan(sys.argv[2], "P", sys.argv[3] if len(sys.argv) == 4 else None)
         else:
-            raise ValueError("Usage: bails-qr-frames show|scan|show-psbt FILE, or scan-psbt FILE [FIRST_FRAME]")
+            raise ValueError("Usage: bails-qr-frames show|scan|scan-any|show-psbt FILE, or scan-psbt FILE [FIRST_FRAME]")
     except Cancelled:
         return 2
     except (ValueError, OSError, ImportError, zlib.error) as error:
