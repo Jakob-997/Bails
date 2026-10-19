@@ -140,6 +140,72 @@ def make_png(frame):
     return png.getvalue()
 
 
+def menu(kind):
+    _GLib, Gtk = gtk_modules()
+    from gi.repository import Gdk, GdkPixbuf, Gio
+    app = Gtk.Application(application_id="org.bails.QRMenu", flags=Gio.ApplicationFlags.NON_UNIQUE)
+    selection = []
+    icons = Path(__file__).resolve().parent.parent / "share/icons/hicolor/scalable/apps"
+
+    def activate(application):
+        window = Gtk.ApplicationWindow(application=application,
+                                       title="Wallet tools" if kind == "wallet" else "QR transfer")
+        window.set_default_size(540, 440)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        for side in ("top", "bottom", "start", "end"):
+            getattr(box, "set_margin_" + side)(24)
+        choices = ([("Export watch-only wallet", "bails-send.svg", "Show public descriptors and saved labels as QR codes."),
+                    ("Receive watch-only wallet", "bails-qr.svg", "Scan a wallet export from the other computer.")]
+                   if kind == "wallet" else
+                   [("Scan QR", "bails-qr.svg", "Import a transaction or check an address across all wallets."),
+                    ("Send transaction", "bails-send.svg", "Show a saved PSBT as a QR code."),
+                    ("Wallet tools", "bails-wallet-tools.svg", "Export or receive a watch-only wallet.")])
+
+        def select(_button, value):
+            selection.append(value)
+            window.close()
+
+        for title, icon, description in choices:
+            button = Gtk.Button()
+            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            for side in ("top", "bottom", "start", "end"):
+                getattr(row, "set_margin_" + side)(10)
+            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(icons / icon), 24, 24, True)
+            image = Gtk.Image.new_from_paintable(Gdk.Texture.new_for_pixbuf(pixbuf))
+            image.set_valign(Gtk.Align.CENTER)
+            text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            text.set_hexpand(True)
+            label = Gtk.Label(label=title, xalign=0)
+            detail = Gtk.Label(label=description, xalign=0, wrap=True)
+            detail.add_css_class("dim-label")
+            text.append(label)
+            text.append(detail)
+            row.append(image)
+            row.append(text)
+            button.set_child(row)
+            button.connect("clicked", select, title)
+            box.append(button)
+        close = Gtk.Button(label="Back" if kind == "wallet" else "Close")
+        close.connect("clicked", lambda _button: window.close())
+        box.append(close)
+        window.set_child(box)
+        # Escape keeps the same close behavior as the other transfer dialogs.
+        controller = Gtk.EventControllerKey()
+        def key_pressed(_controller, keyval, _keycode, _state):
+            if keyval == Gdk.KEY_Escape:
+                window.close()
+                return True
+            return False
+        controller.connect("key-pressed", key_pressed)
+        window.add_controller(controller)
+        window.present()
+
+    app.connect("activate", activate)
+    app.run([])
+    if selection:
+        print(selection[0])
+
+
 def show(path):
     GLib, Gtk = gtk_modules()
     from gi.repository import Gdk, GdkPixbuf, Gio
@@ -247,8 +313,10 @@ def main():
             gtk_modules()
         elif len(sys.argv) == 3 and sys.argv[1] in ("show", "scan"):
             (show if sys.argv[1] == "show" else scan)(sys.argv[2])
+        elif len(sys.argv) == 3 and sys.argv[1] == "menu" and sys.argv[2] in ("main", "wallet"):
+            menu(sys.argv[2])
         else:
-            raise ValueError("Usage: bails-qr-frames show|scan FILE")
+            raise ValueError("Usage: bails-qr-frames show|scan FILE, or menu main|wallet")
     except Cancelled:
         return 2
     except (ValueError, OSError, ImportError, zlib.error) as error:

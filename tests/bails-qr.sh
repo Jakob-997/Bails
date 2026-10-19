@@ -50,7 +50,7 @@ trap cleanup EXIT
 dialog() {
     printf '%s\n' "$*" >"$tmp/last-dialog"
     [[ ${cancel_dialog:-false} == false ]] || return 1
-    case "$*" in *--entry*) printf "%s\n" "$new_wallet" ;; *--file-selection*) printf '%s\n' "$destination" ;; esac
+    case "$*" in *--progress*) cat >/dev/null ;; *--entry*) printf "%s\n" "$new_wallet" ;; *--file-selection*) printf '%s\n' "$destination" ;; esac
 }
 xdg-open() { cp -- "$1" "$TEST_QR"; }
 choose_wallet() { wallet=offline; }
@@ -154,7 +154,7 @@ bundle={'format':'bails-watch-only', 'version':2, 'network':'regtest',
 PY
 reject wallet_data import "$tmp/signing-envelope.json" rejected-signing "${core_args[@]}"
 rpc listwallets | jq -e 'index("rejected-signing") == null' >/dev/null
-pass 'database QR preserves labels, history and next index; unsafe imports rejected'
+pass 'compact QR preserves labels, rescanned history and next index; unsafe imports rejected'
 
 unsigned=$(rpc -rpcwallet=large -named walletcreatefundedpsbt outputs="{\"$mine\":1}" | jq -r .psbt)
 printf %s "$unsigned" | base64 -d >"$tmp/unsigned.psbt"
@@ -180,15 +180,49 @@ pass 'base64 PSBT input accepted as well as Core binary files'
 printf '%s' "bitcoin:$first?amount=0.1" | python3-qr --factory=pil >"$TEST_QR"
 scan_transfer
 grep -q 'Address belongs' "$tmp/last-dialog"
-grep -q 'Private keys: Yes' "$tmp/last-dialog"
+grep -q 'Core confirms the corresponding private HD key' "$tmp/last-dialog"
 # Check an address in the restored watch-only wallet independently of ownership.
 wallet_data address "$first" large "${core_args[@]}" >"$tmp/watch-status"
-grep -q 'Private keys: No' "$tmp/watch-status"
-grep -q 'watch-only' "$tmp/watch-status"
+grep -q 'Watch-only: private keys disabled' "$tmp/watch-status"
 printf '%s' "$mine" | python3-qr --factory=pil >"$TEST_QR"
-reject scan_transfer
-grep -q 'does NOT belong' "$tmp/last-dialog"
-pass 'BIP21 owned address and unrelated address are distinguished'
+scan_transfer
+grep -q 'Wallet: "miner"' "$tmp/last-dialog"
+external=$(rpc deriveaddresses 'wpkh(0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)' | jq -r '.[0]')
+printf '%s' "$external" | python3-qr --factory=pil >"$TEST_QR"
+scan_transfer
+grep -q 'No matching wallet found' "$tmp/last-dialog"
+# A wallet loaded just for checking must return to its unloaded state.
+rpc unloadwallet offline >/dev/null
+printf '%s' "$first" | python3-qr --factory=pil >"$TEST_QR"
+scan_transfer
+grep -q 'Wallet: "offline"' "$tmp/last-dialog"
+grep -q 'Core confirms the corresponding private HD key' "$tmp/last-dialog"
+rpc listwallets | jq -e 'index("offline") == null' >/dev/null
+rpc loadwallet offline >/dev/null
+# Key possession can be reported while encrypted keys remain locked.
+rpc createwallet locked false false 'regtest-only-passphrase' >/dev/null
+locked_address=$(rpc -rpcwallet=locked getnewaddress)
+wallet_data address "$locked_address" locked "${core_args[@]}" >"$tmp/locked-status"
+grep -q 'Core confirms the corresponding private HD key' "$tmp/locked-status"
+grep -q 'Wallet is locked' "$tmp/locked-status"
+# A 2-of-2 descriptor with just one private HD key must retain the warning.
+rpc createwallet partial >/dev/null
+test_xprv=$(wallet_rpc gethdkeys '{"private":true}' | jq -r '.[0].xprv')
+test_xpub=$(rpc -rpcwallet=miner gethdkeys | jq -r '.[0].xpub')
+test_descriptor="wsh(sortedmulti(2,$test_xprv/0/0,$test_xpub/0/0))"
+descriptor_info=$(printf '%s\n' "$test_descriptor" | rpc -stdin getdescriptorinfo)
+checksum=$(jq -r .checksum <<<"$descriptor_info")
+printf '[{"desc":"%s#%s","timestamp":"now"}]\n' "$test_descriptor" "$checksum" |
+    rpc -rpcwallet=partial -stdin importdescriptors | jq -e '.[0].success == true' >/dev/null
+public_multisig=$(jq -r .descriptor <<<"$descriptor_info")
+multisig_address=$(rpc deriveaddresses "$public_multisig" | jq -r '.[0]')
+wallet_data address "$multisig_address" partial "${core_args[@]}" >"$tmp/multisig-status"
+grep -q 'Multisig policy: this wallet may not hold all required signing keys' "$tmp/multisig-status"
+if grep -q 'Core confirms the corresponding private HD key' "$tmp/multisig-status"; then
+    echo 'Multisig received a single-key confirmation' >&2
+    exit 1
+fi
+pass 'all-wallet address lookup, private HD keys, locked wallets and temporary loading'
 
 printf 'not a PSBT' >"$tmp/payload"
 reject validate_psbt
@@ -254,20 +288,20 @@ reject scan_transfer
 grep -q 'Wallet tools' "$tmp/last-dialog"
 pass 'Scan QR detects address and PSBT formats, redirects wallets and rejects camera errors'
 
-# Exercise Zenity action dispatch, including a nonzero extra-button status.
+# Exercise GTK menu action dispatch without opening actual windows.
 # These overrides are called indirectly by the sourced menu functions.
 # shellcheck disable=SC2317
 (
     printf 0 >"$tmp/menu-step"
-    dialog() {
+    choose_action() {
         local step
         step=$(cat "$tmp/menu-step")
         printf %s "$((step + 1))" >"$tmp/menu-step"
         case "$step" in
-            0) printf '🔧  Wallet tools'; return 1 ;;
-            1) printf '↙  Receive watch-only wallet'; return 1 ;;
-            2) printf '📷  Scan QR'; return 1 ;;
-            3) printf '📤  Send transaction'; return 1 ;;
+            0) printf 'Wallet tools' ;;
+            1) printf 'Receive watch-only wallet' ;;
+            2) printf 'Scan QR' ;;
+            3) printf 'Send transaction' ;;
             *) return 1 ;;
         esac
     }

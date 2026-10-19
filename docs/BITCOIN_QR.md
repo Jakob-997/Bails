@@ -42,10 +42,12 @@ to use a test node. `--check` tests the QR runtime without opening the menu.
 
 - **Scan QR** — import a transaction (PSBT) or verify a receive address. The
   program recognizes an address/BIP21 URI or a PSBT automatically. For an address,
-  select the loaded wallet to check. The result separately reports ownership
-  and whether the wallet has signing key material for that address. Locked
-  wallets must be unlocked in Core before checking their keys. Multisig or
-  other spending conditions may still require additional keys or conditions.
+  the program searches every loaded wallet and wallet found by Core's
+  `listwalletdir`. Unloaded wallets are temporarily loaded and then unloaded;
+  existing startup preferences are preserved. Loading can require a rescan.
+  Progress and per-wallet failures are shown. Every matching wallet is listed.
+  Ownership and key status are separate results. No wallet-selection prompt
+  is needed for address checks.
   For a PSBT, choose a new filename, then open it in Core using **File → Load PSBT
   from file**. Offline, review and sign. Online, review the returned signed
   transaction before broadcasting in Core.
@@ -54,20 +56,21 @@ to use a test node. `--check` tests the QR runtime without opening the menu.
   This action only displays the QR.
 - **Wallet tools** opens the less frequent setup actions: **Export watch-only
   wallet** on the offline computer, or **Receive watch-only wallet** online.
-  Export calls Core's `exportwatchonlywallet`, preserving saved addresses,
-  labels, transaction history, and address indexes while Core removes private
-  keys. A version 2 JSON envelope carries the database and Bitcoin network.
-  The envelope is compressed and cycles through numbered QR frames. Receive
-  opens the camera, asks for a new wallet name, and calls Core's `restorewallet`.
-  It checks that the restored wallet has private keys disabled and no private
-  descriptors. The source wallet must already know the history you want to
-  transfer; synchronization may still be needed for newer transactions.
-  Update both computers before transferring wallets. Older version 1 descriptor
-  bundles remain importable and require historical blocks for rescanning.
+  Export creates a compact version 1 public-descriptor bundle: descriptor
+  timestamps, receive/change ranges, next-address indexes, and all saved
+  address-book entries and labels, including empty labels and unused issued
+  receive addresses. Core confirms the descriptors contain no private keys.
+  The bundle is compressed and cycles through numbered QR frames. Receive
+  creates a new wallet with private keys disabled, imports the descriptors,
+  rescans their history, and restores the labels. Relevant historical blocks
+  must be available to the receiving node. Transaction history and the wallet
+  database are not transmitted. Older version 2 database exports remain
+  importable. Update both computers before transferring wallets.
 
-The Zenity menus use image rows with bundled SVG icons, independent of emoji
-fonts or the icon theme cache. Select an action and click **Open**, or
-double-click its row. **Close** and Escape exit the main menu.
+The GTK menus use single-click buttons with bundled SVG icons directly beside
+their labels. The larger initial window shows all actions without scrolling.
+There is no decorative QR image or separate expanding icon column. **Close**
+and Escape exit the main menu. Zenity handles the other transfer dialogs.
 
 Scan QR opens the camera immediately. Send transaction opens the file picker
 immediately. Wallet export opens its QR window after wallet selection, without
@@ -106,11 +109,23 @@ symlinks are never overwritten.
   Restored wallets are not automatically loaded at startup. Import never
   replaces an existing wallet. A failed import can leave a wallet directory:
   inspect the error in Core before retrying with another name.
-- The address check separately reports ownership and signing key availability.
-  Private descriptors are passed to Core through standard input, not process
-  arguments. This is not proof that every multisig key or spending condition is
-  satisfied. BIP21 amounts and balances are not checked. Control/binary bytes
-  in an address payload are rejected instead of silently removed.
+- The address check uses `getaddressinfo` for ownership and `getwalletinfo`
+  for enforced watch-only status. For ordinary single-key HD descriptors
+  (`pkh`, `wpkh`, `sh(wpkh)`, and `tr` without a script tree), it matches the
+  exact parent descriptor against the key-to-descriptor association in Core's
+  `gethdkeys` inventory, requires one associated HD key with `has_private=true`, and
+  requires `deriveaddresses` at the address index to reproduce the scanned
+  address exactly. It never requests private HD keys or unlocks wallets.
+  Locked-wallet key possession can still be reported; signing requires unlock.
+  Core may store a master xpub while displaying a normalized account xpub in
+  the descriptor. These strings are not required to match; Core's association
+  supplies that relationship. Fingerprints alone are never used as proof.
+  This trusts Core's key inventory; it is not a cryptographic signing test.
+  Complex scripts, multisig, individual imported keys, unavailable RPCs and
+  ambiguous derivations are reported as unverified. Neither `ismine` nor
+  `private_keys_enabled` alone is treated as proof of signing ability.
+  BIP21 amounts and balances are not checked. Control/binary bytes in an
+  address payload are rejected instead of silently removed.
 - Exported wallet data is private financial metadata. Temporary files are kept
   with restrictive permissions under `/tmp`, which is memory-backed on Tails,
   and removed on normal exit/signals. The program does not enforce the air gap;
@@ -133,9 +148,16 @@ The integration test uses a network-disabled Core regtest node and actual QR
 images decoded by `zbarimg`. It covers wallet metadata preservation, unsigned and
 signed PSBT transfer, automatic format detection, address ownership, malformed
 input, size limits, cancellation, camera failure, overwrite/symlink protection,
-and Zenity menu dispatch, including nonzero extra-button status. Multipart tests
+and menu dispatch. Multipart tests
 cover real frame images, out-of-order/repeated/missed parts, compression bounds,
-camera completion/cancellation, and byte-identical setup transfer, label preservation and Core history restoration.
+camera completion/cancellation, and byte-identical setup transfer, label preservation and Core history rescanning.
+
+The RPC-boundary tests exercise exact key/descriptor/address matching, locked
+and watch-only wallets, unsupported policies, failed lookups, temporary loading,
+cleanup, and compact exports. The regtest script additionally checks real Core
+key inventory and derivation, unloaded-wallet lookup, encrypted locked wallets,
+and address/label preservation. These tests must pass on the supported Core
+build before treating a new key-status integration as validated.
 
 Before deployment, test on current stable Tails with real webcams: launcher and
 menu appearance, themed icons, camera cancellation/timeout, full-size image

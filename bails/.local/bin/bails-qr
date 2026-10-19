@@ -30,6 +30,7 @@ wallet_rpc() { rpc -rpcwallet="$wallet" "$@"; }
 wallet_frames() { python3 "$(dirname -- "${BASH_SOURCE[0]}")/bails-qr-frames" "$@"; }
 
 wallet_data() { python3 "$(dirname -- "${BASH_SOURCE[0]}")/bails-qr-wallet" "$@"; }
+choose_action() { wallet_frames menu "$1"; }
 
 choose_wallet() {
     local wallets index
@@ -146,20 +147,18 @@ receive_psbt() {
 
 check_address() {
     local address info
-    choose_wallet || return 1
     # Accept a plain address or the address part of a Bitcoin Core BIP21 QR.
     address=$(cat "$tmp/payload")
     address=${address#bitcoin:}
     address=${address%%\?*}
     [[ $address =~ ^[a-zA-Z0-9]{14,100}$ ]] || { fail 'Expected a Bitcoin address QR.'; return 1; }
-    info=$(wallet_data address "$address" "$wallet" "${core_args[@]}" 2>"$tmp/frames-error") || {
+    wallet_data address-all "$address" "$tmp/address-result" "${core_args[@]}" 2>"$tmp/frames-error" |
+        dialog --progress --pulsate --auto-close --no-cancel --no-markup \
+            --text='Checking all wallets. Loading a wallet may require a rescan.' || {
         fail "$(cat "$tmp/frames-error")"; return 1;
     }
-    if [[ $info == 'Address does NOT belong'* ]]; then
-        fail "$info"
-    else
-        dialog --info --no-markup --text="$info"
-    fi
+    info=$(cat "$tmp/address-result") || return 1
+    dialog --info --no-markup --width=620 --height=420 --text="$info"
 }
 
 # Detect the format once; never rescan after asking the user to choose a wallet.
@@ -187,34 +186,22 @@ scan_transfer() {
 }
 
 wallet_tools() {
-    local action icon
-    icon="$(dirname -- "${BASH_SOURCE[0]}")/../share/icons/hicolor/scalable/apps/bails-qr.svg"
-    action=$(dialog --list --imagelist --column=Icon --column=Action --hide-header --print-column=2 \
-        --ok-label=Open --cancel-label=Back --title='Wallet tools' \
-        --text='Set up the online watch-only wallet.' \
-        "$icon" 'Export watch-only wallet' \
-        "$icon" 'Receive watch-only wallet') || :
+    local action
+    action=$(choose_action wallet) || return 1
     case "$action" in
-        'Export watch-only wallet'|'↗  Export watch-only wallet') export_wallet ;;
-        'Receive watch-only wallet'|'↙  Receive watch-only wallet') receive_wallet ;;
+        'Export watch-only wallet') export_wallet ;;
+        'Receive watch-only wallet') receive_wallet ;;
     esac
 }
 
 transfer_menu() {
-    local action icon
-    icon="$(dirname -- "${BASH_SOURCE[0]}")/../share/icons/hicolor/scalable/apps/bails-qr.svg"
+    local action
     while true; do
-        action=$(dialog --list --imagelist --column=Icon --column=Action --hide-header --print-column=2 \
-            --ok-label=Open --cancel-label=Close \
-            --text='Scan to import a transaction or verify an address.
-Send to show a transaction QR.
-Wallet tools sets up a watch-only wallet.' \
-            "$icon" 'Scan QR' "${icon%/*}/bails-send.svg" 'Send transaction' \
-            "${icon%/*}/bails-wallet-tools.svg" 'Wallet tools') || :
+        action=$(choose_action main) || return 0
         case "$action" in
-            '▦  Scan QR'|'📷  Scan QR'|'Scan QR') scan_transfer ;;
-            'Send transaction'|'📤  Send transaction'|'↗  Send transaction') send_psbt ;;
-            '⚙  Wallet tools'|'🔧  Wallet tools'|'Wallet tools') wallet_tools ;;
+            'Scan QR') scan_transfer ;;
+            'Send transaction') send_psbt ;;
+            'Wallet tools') wallet_tools ;;
             *) return 0 ;;
         esac
     done

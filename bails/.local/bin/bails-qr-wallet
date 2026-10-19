@@ -18,15 +18,107 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-"""Core watch-only database transfer, with legacy public JSON import."""
+"""Compact public wallet setup and conservative all-wallet address checks."""
 import json
 import base64
 import binascii
+import re
+import signal
 from pathlib import Path
 import subprocess
 import sys
 
 MAX_FILE = 1024 * 1024
+
+
+def key_status(rpc, address, wallet, info):
+    status = rpc("getwalletinfo", selected=wallet)
+    if status.get("private_keys_enabled") is False:
+        return "Watch-only: private keys disabled; no local signing keys."
+    if status.get("blank") is True:
+        return "Key status not verified: wallet is marked blank."
+    parent = info.get("parent_desc")
+    if not status.get("descriptors") or not parent:
+        return "Key status not verified: no parent descriptor reported."
+    try:
+        # Both RPCs obtain this descriptor through Core's GetDescriptorString.
+        # Do not canonicalize a private descriptor: normalized account xpubs
+        # need not have the same representation as the wallet's stored key.
+        keys = rpc("gethdkeys", selected=wallet)
+        related = [key for key in keys if any(item.get("desc") == parent
+                   for item in key.get("descriptors", []))]
+        expression = parent.split("#", 1)[0]
+        if expression.startswith("sh(wpkh(") and expression.endswith("))"):
+            expression = expression[3:-1]
+        match = re.fullmatch(
+            r"(?:pkh|wpkh|tr)\((?:\[[0-9a-fA-F]{8}(?:/[0-9]+[h']?)*\])?"
+            r"((?:xpub|tpub)[1-9A-HJ-NP-Za-km-z]+)(?:/[0-9]+)*(\/\*)?\)", expression)
+        if not match:
+            if any(key.get("has_private") is True for key in related):
+                return "Signing HD key(s) reported for this descriptor; additional keys or spending conditions may be required. Full spending ability not verified."
+            return "Key status not verified: descriptor is outside the supported single-key HD checks."
+        # gethdkeys lists the stored master xpub, while parent_desc can contain
+        # the account xpub after hardened derivation. Core supplies the exact
+        # key-to-descriptor association; those xpub strings need not be equal.
+        # A supported descriptor has one HD key, so require one inventory match.
+        if len(related) != 1 or not isinstance(related[0].get("xpub"), str) or related[0].get("has_private") is not True:
+            return "Key status not verified: Core did not confirm the corresponding private HD key."
+        arguments = []
+        if match[2]:
+            path = info.get("hdkeypath", "")
+            index = path.rsplit("/", 1)[-1]
+            if not index.isascii() or not index.isdecimal() or not 0 <= int(index) < 2**31:
+                return "Key status not verified: missing or unsupported address derivation index."
+            arguments.append(json.dumps([int(index), int(index)]))
+        # Independently tie the stored descriptor/key to the exact scanned address.
+        if rpc("deriveaddresses", parent, *arguments) != [address]:
+            return "Key status not verified: derived address did not match the scanned address."
+        suffix = " Wallet is locked; unlock in Core to sign." if status.get("unlocked_until") == 0 else ""
+        return "Core confirms the corresponding private HD key; derived address matches." + suffix
+    except (ValueError, KeyError, TypeError):
+        return "Key status not verified: Core could not complete the HD-key check."
+
+
+def address_report(rpc, address, wallet):
+    info = rpc("getaddressinfo", address, selected=wallet)
+    if not (info.get("ismine") is True or info.get("iswatchonly") is True):
+        return None
+    report = "Wallet: " + json.dumps(wallet, ensure_ascii=False) + "\n" + key_status(rpc, address, wallet, info)
+    if re.search(r"(?:sorted)?multi(?:_a)?\(", info.get("parent_desc", "")):
+        report += "\nMultisig policy: this wallet may not hold all required signing keys. Additional signers may be required."
+    return report
+
+
+def search_wallets(rpc, address, progress=lambda _message: None):
+    if rpc("validateaddress", address).get("isvalid") is not True:
+        raise ValueError("Bitcoin Core rejected this address for the current network.")
+    loaded = rpc("listwallets")
+    matches, errors = [], []
+    names = list(dict.fromkeys([*loaded, *(item["name"] for item in rpc("listwalletdir")["wallets"])]))
+    for name in names:
+        opened = False
+        progress("Checking wallet " + json.dumps(name, ensure_ascii=False))
+        try:
+            if name not in loaded:
+                # Omit load_on_startup: null preserves existing startup preferences.
+                rpc("loadwallet", name)
+                opened = True
+            report = address_report(rpc, address, name)
+            if report:
+                matches.append(report)
+        except (ValueError, KeyError, TypeError) as error:
+            errors.append("Could not check " + json.dumps(name, ensure_ascii=False) + ": " + str(error))
+        finally:
+            if opened:
+                try:
+                    rpc("unloadwallet", name)
+                except ValueError as error:
+                    errors.append("Could not unload " + json.dumps(name, ensure_ascii=False) + ": " + str(error))
+    heading = "Address belongs to the following wallet(s):" if matches else "No matching wallet found among the wallets successfully checked."
+    text = heading + "\n" + address + "\n\n" + "\n\n".join(matches)
+    if errors:
+        text += "\n\nIncomplete check:\n" + "\n".join(errors)
+    return text + "\n\nKey status relies on Core's key inventory and public derivation. No signing test was performed; payment amounts and balances are not checked."
 
 
 def validate(data):
@@ -84,55 +176,31 @@ def transfer(action, path, wallet, flags):
         return json.loads(result.stdout) if result.stdout.strip() else None
 
     network = rpc("getblockchaininfo")["chain"]
+    if action == "address-all":
+        report = search_wallets(rpc, path, lambda message: print("# " + message, flush=True))
+        Path(wallet).write_text(report, encoding="utf-8")
+        print("100", flush=True)
+        return
     if action == "address":
-        info = rpc("getaddressinfo", path, selected=wallet)
-        if not (info.get("ismine") or info.get("iswatchonly")):
-            print("Address does NOT belong to the selected wallet:\n" + path)
-            return
-        status = rpc("getwalletinfo", selected=wallet)
-        message = "Address belongs to the selected wallet:\n" + path + "\n\n"
-        if status.get("private_keys_enabled") is False:
-            message += "Private keys: No. This is a watch-only wallet; it cannot sign or spend."
-        elif status.get("unlocked_until") == 0:
-            message += "Private keys: Not checked. Unlock this wallet in Bitcoin Core and scan again."
-        elif status.get("descriptors") and not info.get("parent_desc"):
-            message += "Private keys: Not checked. Core did not identify the parent descriptor for this address."
-        elif status.get("descriptors"):
-            parent = info.get("parent_desc")
-            found = False
-            for item in rpc("listdescriptors", "true", selected=wallet)["descriptors"]:
-                details = rpc("getdescriptorinfo", item["desc"])
-                if details["descriptor"] == parent and details["hasprivatekeys"]:
-                    found = True
-                    break
-            if found:
-                message += ("Private keys: Yes, this wallet has signing key material for this address. "
-                            "Multisig or other spending conditions may require additional keys or conditions.")
-            else:
-                message += "Private keys: No signing key found for this address. It is watch-only in this wallet."
-        elif info.get("ismine") and not info.get("iswatchonly"):
-            message += "Private keys: Yes, Bitcoin Core identifies this address as spendable by this wallet."
-        else:
-            message += "Private keys: No. This address is watch-only in this wallet."
-        print(message + "\n\nThis does not verify a payment amount or an available balance.")
+        report = address_report(rpc, path, wallet)
+        print(report if report else "Address does NOT belong to the selected wallet:\n" + path)
         return
     if action == "export":
-        # Never copy/backup the signing wallet: Core strips its private keys.
-        database = Path(path).with_suffix(".core.dat")
-        try:
-            rpc("exportwatchonlywallet", str(database.resolve()), selected=wallet)
-            with database.open("rb") as source:
-                raw = source.read(MAX_FILE + 1)
-            if not raw.startswith(b"SQLite format 3\0"):
-                raise ValueError("Core did not export a SQLite watch-only wallet.")
-            data = json.dumps({"format": "bails-watch-only", "version": 2, "network": network,
-                               "wallet": base64.b64encode(raw).decode("ascii")},
-                              separators=(",", ":")).encode()
-            if len(data) > MAX_FILE:
-                raise ValueError("Watch-only wallet export exceeds the 1 MiB QR limit.")
-            Path(path).write_bytes(data)
-        finally:
-            database.unlink(missing_ok=True)
+        descriptors = rpc("listdescriptors", "false", selected=wallet)["descriptors"]
+        descriptors = [{key: value for key, value in item.items() if key != "next"}
+                       for item in descriptors]
+        labels = []
+        for label in rpc("listlabels", selected=wallet):
+            addresses = rpc("getaddressesbylabel", label, selected=wallet)
+            labels.extend({"type": "addr", "ref": address, "label": label} for address in addresses)
+        bundle = {"format": "bails-watch-only", "version": 1, "network": network,
+                  "descriptors": descriptors, "labels": labels}
+        data = json.dumps(bundle, ensure_ascii=False, separators=(",", ":")).encode()
+        validate(data)
+        for item in descriptors:
+            if rpc("getdescriptorinfo", item["desc"])["hasprivatekeys"]:
+                raise ValueError("Core returned a private descriptor; refusing export.")
+        Path(path).write_bytes(data)
         return
 
     with open(path, "rb") as source:
@@ -185,11 +253,16 @@ def transfer(action, path, wallet, flags):
 
 
 if __name__ == "__main__":
+    def interrupted(_signum, _frame):
+        raise KeyboardInterrupt
+    signal.signal(signal.SIGTERM, interrupted)
     try:
-        if len(sys.argv) < 4 or sys.argv[1] not in ("export", "import", "address"):
-            raise ValueError("Usage: bails-qr-wallet export|import|address FILE_OR_ADDRESS WALLET [CORE FLAGS]")
+        if len(sys.argv) < 4 or sys.argv[1] not in ("export", "import", "address", "address-all"):
+            raise ValueError("Usage: bails-qr-wallet export|import|address|address-all FILE_OR_ADDRESS WALLET_OR_REPORT [CORE FLAGS]")
         transfer(*sys.argv[1:4], sys.argv[4:])
     except (ValueError, OSError, KeyError, TypeError) as error:
         print(str(error), file=sys.stderr)
         sys.exit(1)
+    except KeyboardInterrupt:
+        sys.exit(130)
 
