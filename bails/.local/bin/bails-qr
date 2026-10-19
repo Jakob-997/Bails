@@ -70,12 +70,13 @@ for i, name in enumerate(json.load(sys.stdin)):
 # Keep binary data in files, never shell variables. Raw oneshot has no delimiter.
 scan() {
     if ! timeout 120 zbarcam --nodbus --raw -Sdisable -Sqrcode.enable -Sbinary --oneshot 2>"$tmp/camera-error" |
-        head -c 2954 >"$tmp/scan"; then
+        head -c 4297 >"$tmp/scan"; then
         fail 'No QR code received. Check the camera and try again.'; return 1
     fi
     local size
     size=$(stat -c %s "$tmp/scan")
-    if ((size < 1 || size > 2953)); then
+    if ((size < 1 || size > 4296)) ||
+        { ((size > 2953)) && ! LC_ALL=C grep -Eq '^B\$[H2Z][A-Z]' "$tmp/scan"; }; then
         fail 'The QR code is empty or too large.'; return 1
     fi
 }
@@ -155,7 +156,9 @@ send_psbt() {
     head -c 1048577 -- "$file" >"$tmp/payload" || return 1
     [[ $(stat -c %s "$tmp/payload") -le 1048576 ]] || { fail 'PSBT is too large.'; return 1; }
     validate_psbt || { fail 'Bitcoin Core could not decode this PSBT.'; return 1; }
-    show_qr "$tmp/transaction.psbt"
+    wallet_frames show-psbt "$tmp/transaction.psbt" 2>"$tmp/frames-error" || {
+        fail "$(cat "$tmp/frames-error")"; return 1;
+    }
 }
 
 receive_psbt() {
@@ -194,8 +197,19 @@ PY
 # Detect the format once; never rescan after asking the user to choose a wallet.
 scan_transfer() {
     scan || return 1
+    if LC_ALL=C grep -Eq '^B\$[H2Z]P' "$tmp/scan"; then
+        local status=0
+        wallet_frames scan-psbt "$tmp/payload" "$tmp/scan" 2>"$tmp/frames-error" || status=$?
+        ((status != 2)) || return 1
+        ((status == 0)) || { fail "$(cat "$tmp/frames-error")"; return 1; }
+        receive_psbt
+        return $?
+    fi
     if LC_ALL=C grep -Eq '^B\$[H2Z][BJ]' "$tmp/scan"; then
         fail 'This is a wallet export. Use Wallet tools → Receive watch-only wallet.'; return 1
+    fi
+    if LC_ALL=C grep -q '^B\$' "$tmp/scan"; then
+        fail 'Unsupported BBQr type. Choose a PSBT in Sparrow and select BBQr encoding.'; return 1
     fi
     if [[ $(head -c 2 "$tmp/scan" | od -An -tx1 | tr -d ' \n') == 1f8b ]]; then
         unpack || return 1

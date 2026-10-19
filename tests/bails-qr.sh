@@ -55,7 +55,9 @@ dialog() {
 xdg-open() { cp -- "$1" "$TEST_QR"; }
 choose_wallet() { wallet=offline; }
 wallet_frames() {
-    if [[ $1 == show ]]; then
+    if [[ $1 == show-psbt ]]; then
+        python3 "$root/tests/bails-qr-frames.py" --render "$2" "$WALLET_FRAMES" P
+    elif [[ $1 == show ]]; then
         python3 "$root/tests/bails-qr-frames.py" --render "$2" "$WALLET_FRAMES"
     else
         python3 "$root/bails/.local/bin/bails-qr-frames" "$@"
@@ -167,7 +169,8 @@ signed=$(printf '%s\n' "$unsigned" | wallet_rpc -stdin walletprocesspsbt | jq -r
 printf %s "$signed" | base64 -d >"$tmp/signed.psbt"
 destination="$tmp/signed.psbt"
 send_psbt
-scan && unpack || exit 1
+destination="$tmp/returned.psbt"
+scan_transfer || exit 1
 cmp "$tmp/signed.psbt" "$tmp/payload"
 { base64 -w0 "$tmp/payload"; printf '\n'; } | rpc -stdin finalizepsbt | jq -e '.complete == true' >/dev/null
 pass 'received PSBT can be signed and sent back as a complete transaction'

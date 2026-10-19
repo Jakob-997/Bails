@@ -83,7 +83,7 @@ descriptions. Selecting a main-menu row highlights its description. Zenity has n
 selection-change callback for a separate dynamic help area, so descriptions
 remain visible alongside each action. Select an action and click **Open**, or
 double-click it. **Close** and Escape exit the main menu.
-Only the animated wallet QR viewer uses a small GTK drawing helper. It creates
+Only the animated wallet/PSBT QR viewer uses a small GTK drawing helper. It creates
 its first image synchronously and reports rendering failures to the caller;
 errors must not silently return success without showing a window.
 
@@ -98,24 +98,30 @@ can shift the preview to make room, or put the counter above/below it if the
 screen is too narrow. Placement is optional: missing desktop capabilities,
 ambiguous window matches or insufficient space leave the counter movable by
 hand and do not interrupt the transfer. No extra package is installed.
-Transaction/address scans time out after two minutes; wallet scans after five.
-Transaction QR images open in a separate viewer; close it after scanning.
+The initial transaction/address scan times out after two minutes; animated
+transfers allow five minutes. On detecting a multipart PSBT, the camera restarts
+in continuous mode with the first frame retained. Keep the animation running.
+Transaction QR frames open in the animated viewer; close it after scanning.
 Received files are saved only to a user-selected new path; existing files and
 symlinks are never overwritten.
 
 ## Limits and security boundaries
 
-- Transactions use gzip-compressed binary in one QR, compatible with the
-  CryoStick manual commands. Scan QR also accepts raw binary/base64 PSBTs and
-  addresses/BIP21 address QRs. Transaction data must fit 2,953 compressed bytes;
-  large PSBTs still require Core file transfer. UR is not supported.
+- Transactions use standard BBQr binary PSBT type `P`, interoperable with
+  Sparrow's BBQr PSBT QR dialog in both directions. Select **BBQr** encoding
+  in Sparrow, rather than UR. Receiving supports hex (`H`), base32 (`2`) and
+  raw DEFLATE (`Z`), including shuffled and repeated frames. Sending uses `Z`
+  or `2`. Finalized raw transaction type `T` and UR are not supported.
+  Legacy single-QR gzip, raw binary/base64 PSBTs and address/BIP21 QRs remain
+  accepted (2,953 bytes for legacy binary input).
 - Wallets use [BBQr](https://github.com/coinkite/BBQr/blob/master/BBQr.md), binary
   type `J`, with raw DEFLATE (`Z`) compression or uncompressed base32 (`2`).
   The receiver also accepts BBQr hex (`H`). Each displayed QR is version 12,
   error correction L, at most 488 characters, and advances every 600 ms.
   A fixed finite set repeats; no fountain encoding is used. The JSON
   payload is a versioned Bails setup bundle, not a cross-wallet setup standard.
-- Wallet exports are limited to 1 MiB uncompressed and 256 QR frames. Transfers
+- Wallet and PSBT transfers are limited to 1 MiB uncompressed and 256 QR frames,
+  with at most 4,296 characters per incoming frame. Transfers
   exceeding these limits require Core file transfer. Frames must agree on their
   headers and lengths; conflicting duplicates and truncated compressed data are
   rejected. BBQr checks neither sender identity nor whole-file authenticity.

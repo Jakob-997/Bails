@@ -27,14 +27,16 @@ def fixture(size):
     return json.dumps({"format":"bails-watch-only", "padding":os.urandom(size).hex()}).encode()
 
 
-def rendered_frames(data):
+def rendered_frames(data, file_type="J"):
     result = []
     with tempfile.TemporaryDirectory() as directory:
         image = Path(directory) / "frame.png"
-        for frame in transport.encode(data):
+        for frame in transport.encode(data, file_type):
             image.write_bytes(transport.make_png(frame))
             decoded = subprocess.check_output(["zbarimg", "--nodbus", "--quiet", "--raw", "-Sbinary", str(image)])
             result.append(decoded.decode("ascii").rstrip("\n"))
+        if file_type == "P":
+            Path(os.environ["TEST_QR"]).write_bytes(transport.make_png(result[0]))
     return result
 
 
@@ -47,6 +49,64 @@ def decode(frames):
 
 
 class WalletFramesTests(unittest.TestCase):
+    def test_reference_psbt_vectors_and_compression_limits(self):
+        bundle = json.loads((ROOT / "tests/fixtures/bbqr-psbt.json").read_text())
+        for frames in bundle["vectors"]:
+            receiver = transport.Receiver("P")
+            for frame in reversed(frames):
+                result = receiver.add(frame)
+            self.assertEqual(result, base64.b64decode(bundle["psbt"]))
+        for data in (b"psbt\xff" + b"x" * transport.MAX_FILE,):
+            compressor = zlib.compressobj(9, zlib.DEFLATED, -10)
+            compressed = compressor.compress(data) + compressor.flush()
+            text = base64.b32encode(compressed).decode().rstrip("=")
+            pieces = [text[i:i+480] for i in range(0, len(text), 480)]
+            receiver = transport.Receiver("P")
+            with self.assertRaises(ValueError):
+                for i, part in enumerate(pieces):
+                    receiver.add(f"B$ZP{transport.base36(len(pieces))}{transport.base36(i)}{part}")
+
+    def test_psbt_encodings_and_independent_reassembly(self):
+        # Independently construct the wire format used by Sparrow: chunks align
+        # to complete base32 groups; Z is raw DEFLATE, not a zlib/gzip wrapper.
+        data = b"psbt\xff" + bytes(range(256)) * 12
+        compressor = zlib.compressobj(9, zlib.DEFLATED, -10)
+        compressed = compressor.compress(data) + compressor.flush()
+        for encoding, payload in (("H", data), ("2", data), ("Z", compressed)):
+            text = payload.hex().upper() if encoding == "H" else base64.b32encode(payload).decode().rstrip("=")
+            pieces = [text[i:i+200] for i in range(0, len(text), 200)]
+            frames = [f"B${encoding}P{transport.base36(len(pieces))}{transport.base36(i)}{part}"
+                      for i, part in enumerate(pieces)]
+            receiver = transport.Receiver("P")
+            self.assertIsNone(receiver.add(frames[-1]))
+            self.assertIsNone(receiver.add(frames[-1]))
+            for frame in frames[-2::-1]:
+                result = receiver.add(frame)
+            self.assertEqual(result, data)
+        frames = transport.encode(data, "P")
+        payload = "".join(f[8:] for f in frames)
+        raw = base64.b32decode(payload + "=" * (-len(payload) % 8))
+        self.assertEqual(zlib.decompress(raw, -10) if frames[0][2] == "Z" else raw, data)
+        self.assertTrue(all(f[3] == "P" for f in frames))
+
+    def test_psbt_type_magic_and_seed(self):
+        data = b"psbt\xff" + b"example" * 30
+        frames = transport.encode(data, "P")
+        self.assertEqual(len(frames), 1)
+        with self.assertRaises(ValueError):
+            transport.Receiver().add(frames[0])
+        with self.assertRaises(ValueError):
+            transport.Receiver("P").add("B$HP010000")
+        with self.assertRaises(ValueError):
+            transport.encode(b"not a PSBT", "P")
+        with tempfile.TemporaryDirectory() as directory:
+            initial, output = Path(directory)/"first", Path(directory)/"output"
+            initial.write_text(frames[0])
+            with patch.object(transport.subprocess, "Popen") as camera:
+                transport.scan(output, "P", initial)
+                camera.assert_not_called()
+            self.assertEqual(output.read_bytes(), data)
+
     def test_counter_placement_uses_clear_side_or_rearranges(self):
         self.assertEqual(transport.side_positions((30, 100, 640, 480), (0, 0, 380, 120), (1366, 768)),
                          (None, (686, 100)))
@@ -100,7 +160,10 @@ class WalletFramesTests(unittest.TestCase):
         camera.stdout.close.assert_called_once()
         progress.stdin.close.assert_called_once()
 
-    def test_progress_counter_and_camera_cleanup_without_desktop(self):
+    def test_psbt_seeded_progress_and_cleanup(self):
+        self.test_progress_counter_and_camera_cleanup_without_desktop("P")
+
+    def test_progress_counter_and_camera_cleanup_without_desktop(self, file_type="J"):
         # Real child processes exercise the pipe/progress lifecycle. Only the
         # camera/UI commands and platform-specific readiness selector are replaced.
         class Ready:
@@ -112,9 +175,12 @@ class WalletFramesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source, output, progress_log = root / "frames", root / "wallet", root / "progress"
-            data = fixture(2000)
-            frames = transport.encode(data)
-            source.write_bytes(("\n".join(frames) + "\n").encode("ascii"))
+            data = b"psbt\xff" + os.urandom(2000) if file_type == "P" else fixture(2000)
+            frames = transport.encode(data, file_type)
+            initial = root / "initial"
+            initial.write_text(frames[0])
+            camera_frames = frames[1:] if file_type == "P" else frames
+            source.write_bytes(("\n".join(camera_frames) + "\n").encode("ascii"))
             real_popen = subprocess.Popen
             children = []
             def spawn(command, **kwargs):
@@ -133,7 +199,7 @@ class WalletFramesTests(unittest.TestCase):
                 return process
             with patch.object(transport.subprocess, "Popen", side_effect=spawn), \
                     patch.object(transport.selectors, "DefaultSelector", Ready):
-                transport.scan(output)
+                transport.scan(output, file_type, initial if file_type == "P" else None)
             self.assertEqual(output.read_bytes(), data)
             text = progress_log.read_text()
             self.assertIn(f"{len(frames)} of {len(frames)} QR frames received", text)
@@ -247,8 +313,8 @@ class WalletFramesTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 4 and sys.argv[1] == "--render":
-        frames = rendered_frames(Path(sys.argv[2]).read_bytes())
+    if len(sys.argv) in (4, 5) and sys.argv[1] == "--render":
+        frames = rendered_frames(Path(sys.argv[2]).read_bytes(), sys.argv[4] if len(sys.argv) == 5 else "J")
         Path(sys.argv[3]).write_text("\n".join(frames) + "\n")
     else:
         unittest.main()
