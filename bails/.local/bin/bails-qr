@@ -86,7 +86,7 @@ def show(data, original, name, directory):
     run("xdg-open", image.name)
 
 
-def scan(wallet_only=False):
+def scan(kind):
     data = run("zbarcam", "--nodbus", "--raw", "-Sdisable", "-Sqrcode.enable",
                "-Sbinary", "--oneshot", timeout=180)
     if not data:
@@ -99,27 +99,29 @@ def scan(wallet_only=False):
             data = source.read(MAX_FILE + 1)
         if len(data) > MAX_FILE:
             raise ValueError("The decompressed file exceeds 1 MiB.")
-    if wallet_only and not data.startswith(b"SQLite format 3\x00"):
-        raise ValueError("Expected a compressed wallet.dat QR. Use Scan QR for PSBTs or addresses.")
-    if data.startswith(b"SQLite format 3\x00"):
+    if kind == "Import Watch-Only Wallet":
+        if not data.startswith(b"SQLite format 3\x00"):
+            raise ValueError("Expected a compressed wallet.dat QR.")
         save(data, "watch-only.dat")
         dialog("--info", "--text=In Bitcoin Core, choose File > Restore Wallet and select the saved wallet.dat file.")
-    elif data.startswith((b"psbt\xff", b"cHNidP")):
+    elif kind == "Receive PSBT":
+        if not data.startswith((b"psbt\xff", b"cHNidP")):
+            raise ValueError("Expected a PSBT QR. Use Verify Address for receive addresses.")
         save(psbt_bytes(data), "received.psbt")
         dialog("--info", "--text=In Bitcoin Core, choose File > Load PSBT from file to review the saved transaction.")
     else:
-        address = data.decode("ascii").strip()
+        address = data.decode("ascii", errors="replace").strip()
         if address.lower().startswith("bitcoin:"):
             address = unquote(urlsplit(address).path)
         if not rpc("validateaddress", address)["isvalid"]:
-            raise ValueError("Expected a PSBT, compressed wallet.dat, or Bitcoin address.")
+            raise ValueError("Expected a Bitcoin address or bitcoin: payment URI.")
         if address.lower().startswith(("bc1", "tb1", "bcrt1")):
             address = address.lower()
         wallets = rpc("listwallets")
         if not wallets:
             raise ValueError("Open your wallet in Bitcoin Core, then scan the address again.")
         if any(rpc("getaddressinfo", address, wallet=wallet).get("ismine") for wallet in wallets):
-            dialog("--info", "--title=Address confirmed", f"--text=✅ You own this address.\n\n{address}")
+            dialog("--info", "--title=Address confirmed", f"--text=You own this address.\n\n{address}")
         else:
             dialog("--warning", "--title=WARNING: Address not owned",
                    f"--text=⚠ WARNING: You do not own this address.\n\n{address}\n\n"
@@ -140,18 +142,20 @@ def main():
         return
     with tempfile.TemporaryDirectory(prefix="bails-qr-", dir="/tmp") as directory:
         while True:
-            action = dialog("--list", "--column=Action", "Scan QR", "Send PSBT",
-                            "Export watch-only wallet", "Import watch-only wallet")
+            action = dialog("--list", "--column=Action", "Verify Address", "Receive PSBT", "Send PSBT", "Wallet Tools")
             if not action:
                 return
             try:
-                if action in ("Scan QR", "Import watch-only wallet"):
-                    scan(wallet_only=action == "Import watch-only wallet")
+                if action == "Wallet Tools":
+                    action = dialog("--list", "--title=Wallet Tools", "--column=Action",
+                                    "Export Watch-Only Wallet", "Import Watch-Only Wallet")
+                if action in ("Verify Address", "Receive PSBT", "Import Watch-Only Wallet"):
+                    scan(action)
                 elif action == "Send PSBT":
                     path = dialog("--file-selection", "--title=Choose a saved PSBT")
                     data = psbt_bytes(read_file(path))
                     show(base64.b64encode(data), data, "transaction.psbt", directory)
-                elif action == "Export watch-only wallet":
+                elif action == "Export Watch-Only Wallet":
                     wallet = wallet_name()
                     path = Path(directory) / "watch-only.dat"
                     path.unlink(missing_ok=True)

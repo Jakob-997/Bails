@@ -32,11 +32,11 @@ class StaticQRTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
 
-    def scan(self, payload):
+    def scan(self, payload, kind="Receive PSBT"):
         with patch.object(qr, "run", return_value=payload), \
                 patch.object(qr, "save") as save, patch.object(qr, "dialog"), \
                 patch.object(qr, "rpc", return_value={}):
-            qr.scan()
+            qr.scan(kind)
             return save.call_args.args
 
     def show(self, payload, original, name):
@@ -67,7 +67,7 @@ class StaticQRTests(unittest.TestCase):
         result = zxingcpp.read_barcode(Image.open(image))
         self.assertIsNotNone(result)
         self.assertEqual(result.bytes, payload)
-        self.assertEqual(self.scan(result.bytes), (original, "watch-only.dat"))
+        self.assertEqual(self.scan(result.bytes, "Import Watch-Only Wallet"), (original, "watch-only.dat"))
 
     def test_base64_psbt_image_roundtrip(self):
         encoded = base64.b64encode(PSBT)
@@ -134,25 +134,25 @@ class StaticQRTests(unittest.TestCase):
                 patch.object(qr, "rpc", side_effect=[{"isvalid": True}, ["other", "signing"],
                                                     {"ismine": False}, {"ismine": True}]) as rpc, \
                 patch.object(qr, "dialog") as dialog:
-            qr.scan()
+            qr.scan("Verify Address")
             self.assertEqual(rpc.call_args.args, ("getaddressinfo", address))
             self.assertEqual(rpc.call_args.kwargs, {"wallet": "signing"})
             choose.assert_not_called()
             dialog.assert_called_once_with("--info", "--title=Address confirmed",
-                                           f"--text=✅ You own this address.\n\n{address}")
+                                           f"--text=You own this address.\n\n{address}")
 
     def test_plain_address_without_scanner_newline(self):
         with patch.object(qr, "run", return_value=b"bcrt1qexample"), \
                 patch.object(qr, "rpc", side_effect=[{"isvalid": True}, ["signing"], {"ismine": True}]) as rpc, \
                 patch.object(qr, "dialog"):
-            qr.scan()
+            qr.scan("Verify Address")
             self.assertEqual(rpc.call_args.args, ("getaddressinfo", "bcrt1qexample"))
 
     def test_unowned_address_has_prominent_warning(self):
         with patch.object(qr, "run", return_value=b"BCRT1QEXAMPLE"), \
                 patch.object(qr, "rpc", side_effect=[{"isvalid": True}, ["signing"], {"ismine": False}]), \
                 patch.object(qr, "dialog") as dialog:
-            qr.scan()
+            qr.scan("Verify Address")
             self.assertEqual(dialog.call_args.args[0], "--warning")
             message = dialog.call_args.args[2]
             for text in ("WARNING", "You do not own this address", "bcrt1qexample", "may be compromised"):
@@ -162,7 +162,7 @@ class StaticQRTests(unittest.TestCase):
         with patch.object(qr, "run", return_value=b"bcrt1qexample"), \
                 patch.object(qr, "rpc", side_effect=[{"isvalid": True}, []]), \
                 patch.object(qr, "dialog") as dialog, self.assertRaisesRegex(ValueError, "Open your wallet"):
-            qr.scan()
+            qr.scan("Verify Address")
         dialog.assert_not_called()
 
     def test_base58_address_keeps_its_case(self):
@@ -170,7 +170,7 @@ class StaticQRTests(unittest.TestCase):
         with patch.object(qr, "run", return_value=address.encode()), \
                 patch.object(qr, "rpc", side_effect=[{"isvalid": True}, ["signing"], {"ismine": True}]) as rpc, \
                 patch.object(qr, "dialog") as dialog:
-            qr.scan()
+            qr.scan("Verify Address")
             self.assertEqual(rpc.call_args.args, ("getaddressinfo", address))
             self.assertIn(address, dialog.call_args.args[2])
 
@@ -178,7 +178,7 @@ class StaticQRTests(unittest.TestCase):
         with patch.object(qr, "run", return_value=b"bCrT1qExAmPlE"), \
                 patch.object(qr, "rpc", return_value={"isvalid": False}) as rpc, \
                 patch.object(qr, "dialog") as dialog, self.assertRaises(ValueError):
-            qr.scan()
+            qr.scan("Verify Address")
         rpc.assert_called_once_with("validateaddress", "bCrT1qExAmPlE")
         dialog.assert_not_called()
 
@@ -187,29 +187,66 @@ class StaticQRTests(unittest.TestCase):
         with patch.object(qr, "run", return_value=b"bcrt1qexample"), \
                 patch.object(qr, "rpc", side_effect=[{"isvalid": True}, ["signing"], error]), \
                 patch.object(qr, "dialog") as dialog, self.assertRaises(subprocess.CalledProcessError):
-            qr.scan()
+            qr.scan("Verify Address")
         dialog.assert_not_called()
 
     def test_import_wallet_rejects_other_qr_types(self):
         with patch.object(qr, "run", return_value=base64.b64encode(PSBT)), \
                 patch.object(qr, "save") as save, self.assertRaisesRegex(ValueError, "wallet.dat"):
-            qr.scan(wallet_only=True)
+            qr.scan("Import Watch-Only Wallet")
         save.assert_not_called()
 
     def test_import_wallet_menu_routes_to_scan(self):
         with patch.object(qr.shutil, "which", return_value="available"), \
                 patch.object(qr.tempfile, "TemporaryDirectory", return_value=self.temporary), \
-                patch.object(qr, "dialog", side_effect=["Import watch-only wallet", qr.Cancelled]) as dialog, \
+                patch.object(qr, "dialog", side_effect=["Wallet Tools", "Import Watch-Only Wallet", qr.Cancelled]) as dialog, \
                 patch.object(qr, "scan") as scan, self.assertRaises(qr.Cancelled):
             qr.main()
-        self.assertIn("Import watch-only wallet", dialog.call_args_list[0].args)
-        scan.assert_called_once_with(wallet_only=True)
+        self.assertNotIn("Import Watch-Only Wallet", dialog.call_args_list[0].args)
+        self.assertIn("Import Watch-Only Wallet", dialog.call_args_list[1].args)
+        scan.assert_called_once_with("Import Watch-Only Wallet")
+
+    def test_address_and_psbt_have_separate_menu_actions(self):
+        for action in ("Verify Address", "Receive PSBT"):
+            temporary = tempfile.TemporaryDirectory
+            with patch.object(qr.shutil, "which", return_value="available"), \
+                    patch.object(qr.tempfile, "TemporaryDirectory", side_effect=lambda **kw: temporary()), \
+                    patch.object(qr, "dialog", side_effect=[action, qr.Cancelled]) as dialog, \
+                    patch.object(qr, "scan") as scan, self.assertRaises(qr.Cancelled):
+                qr.main()
+            self.assertEqual(dialog.call_args_list[0].args,
+                             ("--list", "--column=Action", "Verify Address", "Receive PSBT", "Send PSBT", "Wallet Tools"))
+            scan.assert_called_once_with(action)
+
+    def test_receive_psbt_does_not_verify_an_address(self):
+        with patch.object(qr, "run", return_value=b"bcrt1qexample"), \
+                patch.object(qr, "rpc") as rpc, patch.object(qr, "save") as save, \
+                self.assertRaisesRegex(ValueError, "Expected a PSBT QR"):
+            qr.scan("Receive PSBT")
+        rpc.assert_not_called()
+        save.assert_not_called()
+
+    def test_verify_address_does_not_save_a_psbt(self):
+        with patch.object(qr, "run", return_value=base64.b64encode(PSBT)), \
+                patch.object(qr, "rpc", return_value={"isvalid": False}), \
+                patch.object(qr, "save") as save, self.assertRaisesRegex(ValueError, "Expected a Bitcoin address"):
+            qr.scan("Verify Address")
+        save.assert_not_called()
+
+    def test_wallet_tools_cancellation_returns_to_main_menu(self):
+        temporary = tempfile.TemporaryDirectory
+        with patch.object(qr.shutil, "which", return_value="available"), \
+                patch.object(qr.tempfile, "TemporaryDirectory", side_effect=lambda **kw: temporary()), \
+                patch.object(qr, "dialog", side_effect=["Wallet Tools", qr.Cancelled, qr.Cancelled]) as dialog, \
+                self.assertRaises(qr.Cancelled):
+            qr.main()
+        self.assertEqual(dialog.call_args_list[0].args, dialog.call_args_list[2].args)
 
     def test_dependency_failure_and_camera_cancellation(self):
         with patch.object(qr.shutil, "which", return_value=None), self.assertRaisesRegex(ValueError, "Missing zenity"):
             qr.main()
         with patch.object(qr, "run", return_value=b""), self.assertRaises(qr.Cancelled):
-            qr.scan()
+            qr.scan("Verify Address")
         error = subprocess.CalledProcessError(1, "zenity")
         with patch.object(qr, "run", side_effect=error), self.assertRaises(qr.Cancelled):
             qr.dialog("--list")
@@ -222,7 +259,7 @@ class StaticQRTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory
         with patch.object(qr.shutil, "which", return_value="available"), \
                 patch.object(qr.tempfile, "TemporaryDirectory", side_effect=lambda **kw: temporary()), \
-                patch.object(qr, "dialog", side_effect=["Export watch-only wallet", qr.Cancelled]), \
+                patch.object(qr, "dialog", side_effect=["Wallet Tools", "Export Watch-Only Wallet", qr.Cancelled]), \
                 patch.object(qr, "wallet_name", return_value="signing"), \
                 patch.object(qr, "rpc", side_effect=export), patch.object(qr, "show") as show:
             with self.assertRaises(qr.Cancelled):

@@ -2,6 +2,8 @@
 
 Open **CipherStick** > **QR transfer**, or the **QR transfer** application.
 This tool uses one static QR per transfer. It does not use BBQr or UR.
+The main menu offers **Verify Address**, **Receive PSBT**, **Send PSBT**,
+and **Wallet Tools**. Each scanning action accepts only its selected type.
 
 ## Requirements
 
@@ -19,13 +21,13 @@ they are forwarded to `bitcoin-cli`.
 
 1. On the CryoStick, open the signing wallet in Bitcoin Core.
 
-2. Choose **Export watch-only wallet** and select that loaded wallet.
+2. Choose **Wallet Tools** > **Export Watch-Only Wallet** and select that loaded wallet.
    Core creates a watch-only *wallet.dat*. The tool compresses it with gzip
    and opens a static QR image. The signing wallet file is never sent.
    The export preserves the public wallet data that Core includes, such as
    transactions, labels, and receive-request metadata.
 
-3. On the CipherStick, choose **Import watch-only wallet** (or **Scan QR**).
+3. On the CipherStick, choose **Wallet Tools** > **Import Watch-Only Wallet**.
    Hold the QR steady in view of the camera. Close the camera window to cancel;
    scanning times out after
    three minutes.
@@ -45,7 +47,7 @@ they are forwarded to `bitcoin-cli`.
    The static QR contains its Base64 representation, which Sparrow can scan.
    Both binary and Base64 PSBT files are accepted.
 
-3. On the other computer, choose **Scan QR** and save the PSBT.
+3. On the other computer, choose **Receive PSBT** and save the PSBT.
 
 4. In Core, choose **File** > **Load PSBT from file**. Review the transaction
    before signing or broadcasting. The QR tool does neither.
@@ -56,10 +58,10 @@ BBQr QR exports; save a PSBT file in Sparrow for the return trip.
 
 ## Check a receive address
 
-Choose **Scan QR** and scan an address or a `bitcoin:` payment URI. The tool
+Choose **Verify Address** and scan an address or a `bitcoin:` payment URI. The tool
 checks Core's `ismine` result across the open wallets automatically. Open your
 signing wallet in Core first; no wallet selection is needed for this check.
-An owned address gets a green check mark. An address that none of the open
+An owned address shows **You own this address**. An address that none of the open
 wallets recognize gets a warning to confirm it again on the offline signing
 wallet before sending funds. Bech32 addresses are displayed in lowercase;
 case-sensitive Base58 addresses keep their original case. Payment URI amounts
