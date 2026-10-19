@@ -8,6 +8,7 @@ import io
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -32,11 +33,22 @@ class StaticQRTests(unittest.TestCase):
         self.directory = Path(self.temporary.name)
 
     def scan(self, payload):
-        with patch.object(qr, "run", return_value=payload + b"\n"), \
+        with patch.object(qr, "run", return_value=payload), \
                 patch.object(qr, "save") as save, patch.object(qr, "dialog"), \
                 patch.object(qr, "rpc", return_value={}):
             qr.scan()
             return save.call_args.args
+
+    def show(self, payload, original, name):
+        def command(*args, **kwargs):
+            if args[0] == "python3-qr":
+                return subprocess.check_output([sys.executable, "-m", "qrcode.console_scripts", *args[1:]], **kwargs)
+            return b""
+        with patch.object(qr, "run", side_effect=command) as run, patch.object(qr, "dialog") as dialog:
+            qr.show(payload, original, name, self.directory)
+            dialog.assert_not_called()
+            self.assertEqual(run.call_args.args[0], "xdg-open")
+            return Path(run.call_args.args[1])
 
     def test_psbt_formats_and_binary_newline(self):
         for payload in (PSBT, base64.b64encode(PSBT), gzip.compress(PSBT), PSBT + b"\n"):
@@ -51,18 +63,16 @@ class StaticQRTests(unittest.TestCase):
         connection.close()
         original = wallet.read_bytes()
         payload = gzip.compress(original, mtime=0)
-        with patch.object(qr, "run"), patch.object(qr, "dialog"):
-            qr.show(payload, original, "wallet.dat", self.directory)
-        result = zxingcpp.read_barcode(Image.open(self.directory / "qr.png"))
+        image = self.show(payload, original, "wallet.dat")
+        result = zxingcpp.read_barcode(Image.open(image))
         self.assertIsNotNone(result)
         self.assertEqual(result.bytes, payload)
         self.assertEqual(self.scan(result.bytes), (original, "watch-only.dat"))
 
     def test_base64_psbt_image_roundtrip(self):
         encoded = base64.b64encode(PSBT)
-        with patch.object(qr, "run"), patch.object(qr, "dialog"):
-            qr.show(encoded, PSBT, "transaction.psbt", self.directory)
-        result = zxingcpp.read_barcode(Image.open(self.directory / "qr.png"))
+        image = self.show(encoded, PSBT, "transaction.psbt")
+        result = zxingcpp.read_barcode(Image.open(image))
         self.assertEqual(result.bytes, encoded)
         self.assertEqual(self.scan(result.bytes), (PSBT, "received.psbt"))
 
@@ -83,9 +93,8 @@ class StaticQRTests(unittest.TestCase):
 
     def test_largest_binary_static_qr(self):
         payload = bytes((i * 73 + 19) % 256 for i in range(2953))
-        with patch.object(qr, "run"), patch.object(qr, "dialog"):
-            qr.show(payload, payload, "wallet.dat", self.directory)
-        result = zxingcpp.read_barcode(Image.open(self.directory / "qr.png"))
+        image = self.show(payload, payload, "wallet.dat")
+        result = zxingcpp.read_barcode(Image.open(image))
         self.assertIsNotNone(result)
         self.assertEqual(result.bytes, payload)
 
@@ -120,7 +129,7 @@ class StaticQRTests(unittest.TestCase):
 
     def test_address_check_uses_selected_wallet(self):
         address = "bcrt1qexample"
-        with patch.object(qr, "run", return_value=f"bitcoin:{address}?amount=1\n".encode()), \
+        with patch.object(qr, "run", return_value=f"bitcoin:{address}?amount=1".encode()), \
                 patch.object(qr, "wallet_name", return_value="selected"), \
                 patch.object(qr, "rpc", side_effect=[{"isvalid": True}, {"ismine": True}]) as rpc, \
                 patch.object(qr, "dialog") as dialog:
@@ -128,6 +137,29 @@ class StaticQRTests(unittest.TestCase):
             self.assertEqual(rpc.call_args.args, ("getaddressinfo", address))
             self.assertEqual(rpc.call_args.kwargs, {"wallet": "selected"})
             self.assertIn("belongs to wallet selected", dialog.call_args.args[1])
+
+    def test_plain_address_without_scanner_newline(self):
+        with patch.object(qr, "run", return_value=b"bcrt1qexample"), \
+                patch.object(qr, "wallet_name", return_value="selected"), \
+                patch.object(qr, "rpc", side_effect=[{"isvalid": True}, {"ismine": True}]) as rpc, \
+                patch.object(qr, "dialog"):
+            qr.scan()
+            self.assertEqual(rpc.call_args.args, ("getaddressinfo", "bcrt1qexample"))
+
+    def test_import_wallet_rejects_other_qr_types(self):
+        with patch.object(qr, "run", return_value=base64.b64encode(PSBT)), \
+                patch.object(qr, "save") as save, self.assertRaisesRegex(ValueError, "wallet.dat"):
+            qr.scan(wallet_only=True)
+        save.assert_not_called()
+
+    def test_import_wallet_menu_routes_to_scan(self):
+        with patch.object(qr.shutil, "which", return_value="available"), \
+                patch.object(qr.tempfile, "TemporaryDirectory", return_value=self.temporary), \
+                patch.object(qr, "dialog", side_effect=["Import watch-only wallet", qr.Cancelled]) as dialog, \
+                patch.object(qr, "scan") as scan, self.assertRaises(qr.Cancelled):
+            qr.main()
+        self.assertIn("Import watch-only wallet", dialog.call_args_list[0].args)
+        scan.assert_called_once_with(wallet_only=True)
 
     def test_dependency_failure_and_camera_cancellation(self):
         with patch.object(qr.shutil, "which", return_value=None), self.assertRaisesRegex(ValueError, "Missing zenity"):

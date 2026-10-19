@@ -7,7 +7,9 @@ This tool uses one static QR per transfer. It does not use BBQr or UR.
 
 Use the normal Bails installation on Tails, with Bitcoin Core running.
 The tool uses `bitcoin-cli`, Zenity, `zbarcam` from `zbar-tools`, `xdg-open`,
-Python 3, and the `qrcode` and Pillow Python modules. It installs nothing.
+Python 3, and Tails' `python3-qr` command from `python3-qrcode`. It uses that
+command's default PNG renderer without selecting PIL or another image factory.
+It installs nothing.
 Run `bails-qr --check` to check the local dependencies. Wallet export also
 requires Core's `exportwatchonlywallet` RPC (Core 32 or later).
 Options such as `-regtest` and `-datadir=/path` can be passed to `bails-qr`;
@@ -23,8 +25,9 @@ they are forwarded to `bitcoin-cli`.
    The export preserves the public wallet data that Core includes, such as
    transactions, labels, and receive-request metadata.
 
-3. On the CipherStick, choose **Scan QR**. Hold the QR steady in view of
-   the camera. Close the camera window to cancel; scanning times out after
+3. On the CipherStick, choose **Import watch-only wallet** (or **Scan QR**).
+   Hold the QR steady in view of the camera. Close the camera window to cancel;
+   scanning times out after
    three minutes.
 
 4. Save the received file with a new name, such as *watch-only.dat*.
@@ -77,18 +80,24 @@ Use a new filename. To transfer without a camera:
 
 3. Restore the watch-only file, or load the PSBT, using the Core menu above.
 
+The QR opens directly in the normal image viewer without a separate instruction
+popup. Each transfer uses a new image file, so an earlier image cannot be reused
+by the viewer for a different transfer. Close the QR image after scanning.
+
 The QR tool keeps working files in `/tmp` with private permissions and removes
 them when it exits normally. Saved files are written only where you choose;
-existing files are not overwritten. Close the QR image after scanning.
+existing files are not overwritten.
 
 ## Validation
 
 Run `python3 tests/bails-qr.py` with `qrcode`, Pillow, and `zxing-cpp`
-available in the test environment. Only the first two are application dependencies.
+available in the test environment. The QR tests invoke the upstream generator's
+command entry point and decode its PNG output independently.
 
 The Windows development checks cover QR image round trips with an independent
-decoder, compressed wallet bytes, binary scan framing, size limits, PSBT RPC
-validation, address selection, cancellation, and file saving. Core and desktop
+decoder, compressed wallet bytes, raw oneshot scan output without an appended
+newline, size limits, PSBT RPC validation, address selection, cancellation,
+and file saving. Core and desktop
 calls are simulated in those checks. They do not replace a Tails test.
 
 Before using real funds, test on the supported Tails release with two computers:

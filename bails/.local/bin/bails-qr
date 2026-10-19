@@ -77,33 +77,30 @@ def save(data, name):
 
 
 def show(data, original, name, directory):
-    import qrcode
     if len(data) > 2953:
         dialog("--info", "--text=This file is too large for one static QR. Save it for USB or microSD transfer.")
         save(original, name)
         return
-    qr = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L)
-    qr.add_data(data, optimize=0)
-    qr.make(fit=True)
-    image = Path(directory) / "qr.png"
-    qr.make_image().save(image)
-    run("xdg-open", str(image))
-    dialog("--info", "--text=Scan the static QR on the other computer. Close the image when finished, then close this message.")
+    with tempfile.NamedTemporaryFile(suffix=".png", dir=directory, delete=False) as image:
+        image.write(run("python3-qr", "--error-correction=L", input=data))
+    run("xdg-open", image.name)
 
 
-def scan():
-    raw = run("zbarcam", "--nodbus", "--raw", "-Sdisable", "-Sqrcode.enable",
-              "-Sbinary", "--oneshot", timeout=180)
-    if not raw:
+def scan(wallet_only=False):
+    data = run("zbarcam", "--nodbus", "--raw", "-Sdisable", "-Sqrcode.enable",
+               "-Sbinary", "--oneshot", timeout=180)
+    if not data:
         raise Cancelled()
-    if not raw.endswith(b"\n") or len(raw) > 2954:
-        raise ValueError("Unsupported QR payload or scanner output.")
-    data = raw[:-1]  # ZBar appends one newline, even for a binary payload.
+    # ZBar's raw oneshot mode returns exactly the payload, without a newline.
+    if len(data) > 2953:
+        raise ValueError("The QR payload exceeds the supported file size.")
     if data.startswith(b"\x1f\x8b"):
         with gzip.GzipFile(fileobj=io.BytesIO(data)) as source:
             data = source.read(MAX_FILE + 1)
         if len(data) > MAX_FILE:
             raise ValueError("The decompressed file exceeds 1 MiB.")
+    if wallet_only and not data.startswith(b"SQLite format 3\x00"):
+        raise ValueError("Expected a compressed wallet.dat QR. Use Scan QR for PSBTs or addresses.")
     if data.startswith(b"SQLite format 3\x00"):
         save(data, "watch-only.dat")
         dialog("--info", "--text=In Bitcoin Core, choose File > Restore Wallet and select the saved wallet.dat file.")
@@ -124,23 +121,23 @@ def scan():
 
 
 def main():
-    import qrcode
-    import PIL.Image
-    for command in ("zenity", "bitcoin-cli", "zbarcam", "xdg-open"):
+    for command in ("zenity", "bitcoin-cli", "zbarcam", "python3-qr", "xdg-open"):
         if not shutil.which(command):
             raise ValueError(f"Missing {command}. See docs/BITCOIN_QR.md for requirements.")
     if CORE_ARGS == ["--check"]:
-        qrcode.make(b"QR transfer").save(io.BytesIO(), format="PNG")
+        if not run("python3-qr", "--error-correction=L", input=b"QR transfer").startswith(b"\x89PNG\r\n\x1a\n"):
+            raise ValueError("python3-qr did not produce a PNG image.")
         print("QR dependencies available.")
         return
     with tempfile.TemporaryDirectory(prefix="bails-qr-", dir="/tmp") as directory:
         while True:
-            action = dialog("--list", "--column=Action", "Scan QR", "Send PSBT", "Export watch-only wallet")
+            action = dialog("--list", "--column=Action", "Scan QR", "Send PSBT",
+                            "Export watch-only wallet", "Import watch-only wallet")
             if not action:
                 return
             try:
-                if action == "Scan QR":
-                    scan()
+                if action in ("Scan QR", "Import watch-only wallet"):
+                    scan(wallet_only=action == "Import watch-only wallet")
                 elif action == "Send PSBT":
                     path = dialog("--file-selection", "--title=Choose a saved PSBT")
                     data = psbt_bytes(read_file(path))
