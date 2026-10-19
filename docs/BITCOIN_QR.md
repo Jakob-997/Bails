@@ -96,9 +96,11 @@ once an animated transfer is detected. The same counter stays open when
 the transaction camera switches to continuous reception. Close
 the camera window or click **Cancel** in the counter window to cancel.
 On X11/XWayland, the receiver attempts to place the counter beside the ZBar
-preview using Xlib/EWMH window-manager interfaces directly, without requiring
+preview using Xlib window ConfigureRequests directly, without requiring
 `xwininfo`. It verifies actual window separation and retries ignored move
-requests throughout scanning. It
+requests throughout scanning. While placement is pending or refused, it lowers
+the counter and raises the camera without changing keyboard focus, so the preview
+has priority. The counter remains available through the window switcher. It
 can shift the preview to make room, or put the counter above/below it if the
 screen is too narrow. Placement is optional: missing desktop capabilities,
 ambiguous window matches or insufficient space leave the counter movable by

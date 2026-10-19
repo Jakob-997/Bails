@@ -84,7 +84,7 @@ def x11_scan_windows(xlib, display, root):
                 title = C.string_at(name).decode("utf-8", errors="replace")
             finally:
                 xlib.XFree(name)
-            kind = "counter" if title == "Wallet QR transfer" else "camera" if "zbar" in title.lower() else None
+            kind = "counter" if title.casefold() == "wallet qr transfer" else "camera" if "zbar" in title.lower() else None
             if kind:
                 rr, child = C.c_ulong(), C.c_ulong()
                 x, y, ax, ay = C.c_int(), C.c_int(), C.c_int(), C.c_int()
@@ -114,22 +114,13 @@ def position_counter():
     try:
         import ctypes as C
         from ctypes.util import find_library
-        library = find_library("X11")
-        if not library:
-            return False
-        class Data(C.Union):
-            _fields_ = [("l", C.c_long * 5)]
-        class Client(C.Structure):
-            _fields_ = [("type", C.c_int), ("serial", C.c_ulong), ("send_event", C.c_int),
-                        ("display", C.c_void_p), ("window", C.c_ulong), ("message_type", C.c_ulong),
-                        ("format", C.c_int), ("data", Data)]
-        class Event(C.Union):
-            _fields_ = [("client", Client), ("pad", C.c_long * 24)]
+        library = find_library("X11") or "libX11.so.6"
         xlib = C.CDLL(library)
         signatures = {"XOpenDisplay": ([C.c_char_p], C.c_void_p),
                       "XDefaultRootWindow": ([C.c_void_p], C.c_ulong),
-                      "XInternAtom": ([C.c_void_p, C.c_char_p, C.c_int], C.c_ulong),
-                      "XSendEvent": ([C.c_void_p, C.c_ulong, C.c_int, C.c_long, C.c_void_p], C.c_int),
+                      "XMoveWindow": ([C.c_void_p, C.c_ulong, C.c_int, C.c_int], C.c_int),
+                      "XLowerWindow": ([C.c_void_p, C.c_ulong], C.c_int),
+                      "XRaiseWindow": ([C.c_void_p, C.c_ulong], C.c_int),
                       "XFlush": ([C.c_void_p], C.c_int), "XCloseDisplay": ([C.c_void_p], C.c_int),
                       "XQueryTree": ([C.c_void_p, C.c_ulong, C.POINTER(C.c_ulong), C.POINTER(C.c_ulong),
                                       C.POINTER(C.POINTER(C.c_ulong)), C.POINTER(C.c_uint)], C.c_int),
@@ -167,21 +158,17 @@ def position_counter():
             # Include space for title bars and borders in the separation gap.
             positions = side_positions(camera, counter,
                                        (xlib.XDisplayWidth(display, screen), xlib.XDisplayHeight(display, screen)))
-            if positions is None:
-                return False
             if rectangles_separate(camera, counter):
                 return True
-            atom = xlib.XInternAtom(display, b"_NET_MOVERESIZE_WINDOW", False)
-            for wid, position in zip((camera_id, counter_id), positions):
-                if position is None:
-                    continue
-                event = Event()
-                event.client.type, event.client.send_event = 33, True
-                event.client.display, event.client.window = display, wid
-                event.client.message_type, event.client.format = atom, 32
-                event.client.data.l[0] = (1 << 8) | (1 << 9) | (2 << 12)
-                event.client.data.l[1], event.client.data.l[2] = position
-                xlib.XSendEvent(display, root, False, (1 << 19) | (1 << 20), C.byref(event))
+            if positions is not None:
+                for wid, position in zip((camera_id, counter_id), positions):
+                    if position is not None:
+                        xlib.XMoveWindow(display, wid, *position)
+                xlib.XSync(display, False)
+            # Keep the camera unobscured while the compositor processes (or
+            # refuses) ConfigureRequests. These calls do not change focus.
+            xlib.XLowerWindow(display, counter_id)
+            xlib.XRaiseWindow(display, camera_id)
             xlib.XFlush(display)
         finally:
             xlib.XSync(display, False)

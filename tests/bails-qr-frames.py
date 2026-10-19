@@ -168,15 +168,6 @@ class WalletFramesTests(unittest.TestCase):
         lib = MagicMock()
         lib.XOpenDisplay.return_value = 1
         lib.XDefaultRootWindow.return_value = 10
-        lib.XInternAtom.return_value = 42
-        moves = []
-        def sent(_display, _root, _propagate, _mask, pointer):
-            event = pointer._obj.client
-            self.assertEqual(event.message_type, 42)
-            self.assertEqual(event.format, 32)
-            moves.append((event.window, event.data.l[1], event.data.l[2]))
-            return 1
-        lib.XSendEvent.side_effect = sent
         lib.XDisplayWidth.return_value = 1366
         lib.XDisplayHeight.return_value = 768
         windows = {"camera": [(0x101, (360, 100, 640, 480))],
@@ -190,14 +181,24 @@ class WalletFramesTests(unittest.TestCase):
             windows["camera"] = [(0x101, (16, 100, 640, 480))]
             windows["counter"] = [(0x102, (672, 100, 380, 120))]
             self.assertTrue(transport.position_counter())
-        self.assertEqual(moves, [(0x101, 16, 100), (0x102, 672, 100)])
-        self.assertEqual(lib.XCloseDisplay.call_count, 2)
+            # A small screen may have no room for side-by-side windows. Keep
+            # the camera above the counter instead of leaving the preview hidden.
+            windows["camera"] = [(0x101, (0, 0, 640, 480))]
+            windows["counter"] = [(0x102, (100, 100, 380, 120))]
+            lib.XDisplayWidth.return_value = 640
+            lib.XDisplayHeight.return_value = 480
+            self.assertFalse(transport.position_counter())
+        self.assertEqual(lib.XMoveWindow.call_args_list,
+                         [unittest.mock.call(1, 0x101, 16, 100), unittest.mock.call(1, 0x102, 672, 100)])
+        self.assertEqual(lib.XLowerWindow.call_args_list, [unittest.mock.call(1, 0x102)] * 2)
+        self.assertEqual(lib.XRaiseWindow.call_args_list, [unittest.mock.call(1, 0x101)] * 2)
+        self.assertEqual(lib.XCloseDisplay.call_count, 3)
 
     def test_native_window_discovery_finds_reparented_clients_without_xwininfo(self):
         import ctypes as C
         lib = MagicMock()
         keep = []
-        titles = {11: "zbar barcode reader", 12: "Wallet QR transfer"}
+        titles = {11: "ZBar barcode reader", 12: "Wallet QR Transfer"}
         def name(_display, window, pointer):
             if window not in titles:
                 return 0
