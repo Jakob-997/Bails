@@ -73,18 +73,20 @@ to use a test node. `--check` tests the QR runtime without opening the menu.
   are not included in compact exports. The QR window and import completion
   dialog state this limitation; this transfer is not a complete wallet backup.
 
-The menus use simple Zenity lists, with one action column and a larger initial
-window. There is no custom GTK menu or decorative QR image. Select an action
-and click **Open**, or double-click it. **Close** and Escape exit the main menu.
+The menus use Zenity image lists with bundled icons, action names and short
+descriptions. Selecting a row highlights its description. Zenity has no
+selection-change callback for a separate dynamic help area, so descriptions
+remain visible alongside each action. Select an action and click **Open**, or
+double-click it. **Close** and Escape exit the main menu.
 Only the animated wallet QR viewer uses a small GTK drawing helper. It creates
 its first image synchronously and reports rendering failures to the caller;
 errors must not silently return success without showing a window.
 
 Scan QR opens the camera immediately. Send transaction opens the file picker
 immediately. Wallet export opens its QR window after wallet selection, without
-a confirmation screen. Close the camera window to cancel. Wallet scanning uses
-brief desktop progress notifications when available, without a persistent
-instructions dialog covering the camera preview.
+a confirmation screen. Wallet scanning shows a small **Wallet QR transfer**
+Zenity window with the number of frames received and a progress bar. Close
+the camera window or click **Cancel** in the counter window to cancel.
 Transaction/address scans time out after two minutes; wallet scans after five.
 Transaction QR images open in a separate viewer; close it after scanning.
 Received files are saved only to a user-selected new path; existing files and
@@ -136,8 +138,15 @@ symlinks are never overwritten.
   Complex scripts, multisig, individual imported keys, unavailable RPCs and
   ambiguous derivations are reported as unverified. Neither `ismine` nor
   `private_keys_enabled` alone is treated as proof of signing ability.
+  Results show a green check for a confirmed single-key match, a red cross for
+  enforced watch-only wallets, and an amber caution for multisig or unverified
+  checks. A locked wallet explicitly says it must be unlocked before signing.
   BIP21 amounts and balances are not checked. Control/binary bytes in an
   address payload are rejected instead of silently removed.
+- Descriptor birth timestamps are included in compact exports. Core can also
+  report an optional per-key creation timestamp through `getaddressinfo`; that
+  is not the saved receive-request date. The compact import does not recreate
+  the GUI's receive-request records or their messages, amounts and dates.
 - Exported wallet data is private financial metadata. Temporary files are kept
   with restrictive permissions under `/tmp`, which is memory-backed on Tails,
   and removed on normal exit/signals. The program does not enforce the air gap;

@@ -180,14 +180,14 @@ pass 'base64 PSBT input accepted as well as Core binary files'
 printf '%s' "bitcoin:$first?amount=0.1" | python3-qr --factory=pil >"$TEST_QR"
 scan_transfer
 grep -q 'Address belongs' "$tmp/last-dialog"
-grep -q 'Core confirms the corresponding private HD key' "$tmp/last-dialog"
+grep -q 'This wallet has the key needed to spend' "$tmp/last-dialog"
 printf '%s' "bitcoin:${first^^}?amount=0.1" | python3-qr --factory=pil >"$TEST_QR"
 scan_transfer
 grep -q 'Address ownership: confirmed' "$tmp/last-dialog"
-grep -q 'Core confirms the corresponding private HD key' "$tmp/last-dialog"
+grep -q 'This wallet has the key needed to spend' "$tmp/last-dialog"
 # Check an address in the restored watch-only wallet independently of ownership.
 wallet_data address "$first" large "${core_args[@]}" >"$tmp/watch-status"
-grep -q 'Watch-only: private keys disabled' "$tmp/watch-status"
+grep -q 'Cannot spend locally: watch-only' "$tmp/watch-status"
 printf '%s' "$mine" | python3-qr --factory=pil >"$TEST_QR"
 scan_transfer
 grep -q 'Wallet: "miner"' "$tmp/last-dialog"
@@ -200,14 +200,14 @@ rpc unloadwallet offline >/dev/null
 printf '%s' "$first" | python3-qr --factory=pil >"$TEST_QR"
 scan_transfer
 grep -q 'Wallet: "offline"' "$tmp/last-dialog"
-grep -q 'Core confirms the corresponding private HD key' "$tmp/last-dialog"
+grep -q 'This wallet has the key needed to spend' "$tmp/last-dialog"
 rpc listwallets | jq -e 'index("offline") == null' >/dev/null
 rpc loadwallet offline >/dev/null
 # Key possession can be reported while encrypted keys remain locked.
 rpc createwallet locked false false 'regtest-only-passphrase' >/dev/null
 locked_address=$(rpc -rpcwallet=locked getnewaddress)
 wallet_data address "$locked_address" locked "${core_args[@]}" >"$tmp/locked-status"
-grep -q 'Core confirms the corresponding private HD key' "$tmp/locked-status"
+grep -q 'This wallet has the key needed to spend' "$tmp/locked-status"
 grep -q 'Wallet is locked' "$tmp/locked-status"
 # A 2-of-2 descriptor with just one private HD key must retain the warning.
 rpc createwallet partial >/dev/null
@@ -222,7 +222,7 @@ public_multisig=$(jq -r .descriptor <<<"$descriptor_info")
 multisig_address=$(rpc deriveaddresses "$public_multisig" | jq -r '.[0]')
 wallet_data address "$multisig_address" partial "${core_args[@]}" >"$tmp/multisig-status"
 grep -q 'Multisig policy: this wallet may not hold all required signing keys' "$tmp/multisig-status"
-if grep -q 'Core confirms the corresponding private HD key' "$tmp/multisig-status"; then
+if grep -q 'This wallet has the key needed to spend' "$tmp/multisig-status"; then
     echo 'Multisig received a single-key confirmation' >&2
     exit 1
 fi

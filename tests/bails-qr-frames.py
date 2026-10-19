@@ -47,6 +47,63 @@ def decode(frames):
 
 
 class WalletFramesTests(unittest.TestCase):
+    def test_counter_cancellation_stops_camera(self):
+        camera, progress = MagicMock(), MagicMock()
+        camera.poll.return_value = None
+        camera.wait.return_value = 0
+        progress.poll.return_value = 0
+        progress.wait.return_value = 0
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "received"
+            with patch.object(transport.subprocess, "Popen", side_effect=[camera, progress]), \
+                    patch.object(transport.selectors, "DefaultSelector"):
+                with self.assertRaises(transport.Cancelled):
+                    transport.scan(output)
+            self.assertFalse(output.exists())
+        camera.terminate.assert_called_once()
+        camera.stdout.close.assert_called_once()
+        progress.stdin.close.assert_called_once()
+
+    def test_progress_counter_and_camera_cleanup_without_desktop(self):
+        # Real child processes exercise the pipe/progress lifecycle. Only the
+        # camera/UI commands and platform-specific readiness selector are replaced.
+        class Ready:
+            def __enter__(self): return self
+            def __exit__(self, *_args): pass
+            def register(self, *_args): pass
+            def select(self, *_args): return [True]
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output, progress_log = root / "frames", root / "wallet", root / "progress"
+            data = fixture(2000)
+            frames = transport.encode(data)
+            source.write_bytes(("\n".join(frames) + "\n").encode("ascii"))
+            real_popen = subprocess.Popen
+            children = []
+            def spawn(command, **kwargs):
+                if command[0] == "zbarcam":
+                    command = [sys.executable, "-c",
+                               "import pathlib,sys,time; sys.stdout.buffer.write(pathlib.Path(sys.argv[1]).read_bytes()); sys.stdout.buffer.flush(); time.sleep(30)",
+                               str(source)]
+                elif command[0] == "zenity":
+                    command = [sys.executable, "-c",
+                               "import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.stdin.read())",
+                               str(progress_log)]
+                else:
+                    raise AssertionError(command)
+                process = real_popen(command, **kwargs)
+                children.append(process)
+                return process
+            with patch.object(transport.subprocess, "Popen", side_effect=spawn), \
+                    patch.object(transport.selectors, "DefaultSelector", Ready):
+                transport.scan(output)
+            self.assertEqual(output.read_bytes(), data)
+            text = progress_log.read_text()
+            self.assertIn(f"{len(frames)} of {len(frames)} QR frames received", text)
+            self.assertIn("100", text)
+            self.assertTrue(all(child.poll() is not None for child in children))
+
     def test_first_qr_render_failure_is_not_silent_success(self):
         gtk, glib, gdk = MagicMock(), MagicMock(), MagicMock()
         gi = types.ModuleType("gi")
@@ -138,8 +195,9 @@ class WalletFramesTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0)
             self.assertEqual(output.read_bytes(), data)
             self.assertNotIn("--oneshot", (directory / "args").read_text())
-            # The camera preview is no longer covered by a Zenity progress dialog.
-            self.assertFalse((directory / "progress").exists())
+            progress_text = (directory / "progress").read_text()
+            self.assertIn(f"{len(frames)} of {len(frames)} QR frames received", progress_text)
+            self.assertIn("100", progress_text)
             output.unlink()
             camera.write_text('#!/bin/sh\nexit 0\n')
             result = subprocess.run([sys.executable, str(HELPER), "scan", str(output)], env=env, timeout=10)

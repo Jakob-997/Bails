@@ -132,14 +132,15 @@ class WalletTests(unittest.TestCase):
                                         "wallet": base64.b64encode(self.raw).decode()}))
 
     def test_hd_key_confirmation_derives_exact_address(self):
-        self.assertIn("Core confirms the corresponding private HD key", self.address())
+        self.assertIn("This wallet has the key needed to spend", self.address())
+        self.assertIn("✓", self.address())
         self.assertIn("deriveaddresses", self.methods())
         self.assertNotIn("getdescriptorinfo", self.methods())
         self.assertNotIn("listdescriptors", self.methods())
 
     def test_master_inventory_key_and_normalized_account_descriptor_can_differ(self):
         self.keys[0]["xpub"] = "tpubStoredMasterKey"
-        self.assertIn("Core confirms", self.address())
+        self.assertIn("This wallet has the key needed to spend", self.address())
         self.assertIn("deriveaddresses", self.methods())
 
     def test_ambiguous_key_inventory_is_not_confirmation(self):
@@ -154,13 +155,13 @@ class WalletTests(unittest.TestCase):
     def test_derived_address_mismatch_is_not_confirmation(self):
         self.derived = ["bcrt1wrongaddress"]
         self.assertIn("derived address did not match", self.address())
-        self.assertNotIn("Core confirms", self.address())
+        self.assertNotIn("This wallet has the key needed to spend", self.address())
 
     def test_core_uppercase_bech32_qr_uses_validated_canonical_address(self):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             wallet.transfer("address", ADDRESS.upper(), "offline", [])
-        self.assertIn("Core confirms", output.getvalue())
+        self.assertIn("This wallet has the key needed to spend", output.getvalue())
         self.assertIn("Address ownership: confirmed", output.getvalue())
 
     def test_base58_is_not_blindly_case_folded(self):
@@ -187,7 +188,7 @@ class WalletTests(unittest.TestCase):
     def test_locked_wallet_can_report_possession_without_unlock(self):
         self.status["unlocked_until"] = 0
         text = self.address()
-        self.assertIn("Core confirms", text)
+        self.assertIn("This wallet has the key needed to spend", text)
         self.assertIn("Wallet is locked", text)
         self.assertNotIn("walletpassphrase", self.methods())
 
@@ -195,13 +196,16 @@ class WalletTests(unittest.TestCase):
         self.info["parent_desc"] = "wsh(sortedmulti(2,tpubABC123/0/*,tpubOther/0/*))#sum"
         self.keys[0]["descriptors"][0]["desc"] = self.info["parent_desc"]
         text = self.address()
+        self.assertIn("⚠", text)
+        self.assertNotIn("✓", text)
         self.assertIn("Full spending ability not verified", text)
         self.assertIn("Multisig policy: this wallet may not hold all required signing keys", text)
-        self.assertNotIn("Core confirms", text)
+        self.assertNotIn("This wallet has the key needed to spend", text)
 
     def test_watch_only_is_definite_and_does_not_query_keys(self):
         self.status["private_keys_enabled"] = False
-        self.assertIn("Watch-only: private keys disabled", self.address())
+        self.assertIn("Cannot spend locally: watch-only", self.address())
+        self.assertIn("✗", self.address())
         self.assertNotIn("gethdkeys", self.methods())
 
     def test_blank_wallet_is_not_signing_confirmation(self):

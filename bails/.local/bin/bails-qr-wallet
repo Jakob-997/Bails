@@ -34,7 +34,7 @@ MAX_FILE = 1024 * 1024
 def key_status(rpc, address, wallet, info):
     status = rpc("getwalletinfo", selected=wallet)
     if status.get("private_keys_enabled") is False:
-        return "Watch-only: private keys disabled; no local signing keys."
+        return "✗ Cannot spend locally: watch-only (private keys disabled)."
     if status.get("blank") is True:
         return "Key status not verified: wallet is marked blank."
     parent = info.get("parent_desc")
@@ -78,7 +78,7 @@ def key_status(rpc, address, wallet, info):
         if not isinstance(canonical, str) or rpc("deriveaddresses", parent, *arguments) != [canonical]:
             return "Key status not verified: derived address did not match the scanned address."
         suffix = " Wallet is locked; unlock in Core to sign." if status.get("unlocked_until") == 0 else ""
-        return "Core confirms the corresponding private HD key; derived address matches." + suffix
+        return "✓ This wallet has the key needed to spend from this address." + suffix
     except (ValueError, KeyError, TypeError):
         return "Key status not verified: Core could not complete the HD-key check."
 
@@ -87,10 +87,13 @@ def address_report(rpc, address, wallet):
     info = rpc("getaddressinfo", address, selected=wallet)
     if not (info.get("ismine") is True or info.get("iswatchonly") is True):
         return None
+    signing = key_status(rpc, address, wallet, info)
+    if not signing.startswith(("✓", "✗")):
+        signing = "⚠ " + signing
     report = ("Wallet: " + json.dumps(wallet, ensure_ascii=False)
-              + "\nAddress ownership: confirmed by Bitcoin Core.\n" + key_status(rpc, address, wallet, info))
+              + "\nAddress ownership: confirmed by Bitcoin Core.\n" + signing)
     if re.search(r"(?:sorted)?multi(?:_a)?\(", info.get("parent_desc", "")):
-        report += "\nMultisig policy: this wallet may not hold all required signing keys. Additional signers may be required."
+        report += "\n⚠ Multisig policy: this wallet may not hold all required signing keys. Additional signers may be required."
     return report
 
 
