@@ -10,6 +10,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
+import types
 import zlib
 
 sys.dont_write_bytecode = True
@@ -45,6 +47,23 @@ def decode(frames):
 
 
 class WalletFramesTests(unittest.TestCase):
+    def test_first_qr_render_failure_is_not_silent_success(self):
+        gtk, glib, gdk = MagicMock(), MagicMock(), MagicMock()
+        gi = types.ModuleType("gi")
+        repository = types.ModuleType("gi.repository")
+        repository.Gdk = gdk
+        gi.repository = repository
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "wallet.json"
+            source.write_bytes(fixture(10))
+            with patch.dict(sys.modules, {"gi": gi, "gi.repository": repository}), \
+                    patch.object(transport, "gtk_modules", return_value=(glib, gtk)), \
+                    patch.object(transport, "make_png", side_effect=ValueError("test PNG failure")):
+                with self.assertRaisesRegex(ValueError, "QR display failed: test PNG failure"):
+                    transport.show(source)
+            gtk.Window.return_value.present.assert_not_called()
+            gtk.Window.return_value.destroy.assert_called_once()
+
     def test_database_envelope_roundtrip(self):
         database = b"SQLite format 3\0" + os.urandom(16000)
         data = json.dumps({"format": "bails-watch-only", "version": 2, "network": "regtest",

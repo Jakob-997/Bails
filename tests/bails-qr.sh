@@ -181,6 +181,10 @@ printf '%s' "bitcoin:$first?amount=0.1" | python3-qr --factory=pil >"$TEST_QR"
 scan_transfer
 grep -q 'Address belongs' "$tmp/last-dialog"
 grep -q 'Core confirms the corresponding private HD key' "$tmp/last-dialog"
+printf '%s' "bitcoin:${first^^}?amount=0.1" | python3-qr --factory=pil >"$TEST_QR"
+scan_transfer
+grep -q 'Address ownership: confirmed' "$tmp/last-dialog"
+grep -q 'Core confirms the corresponding private HD key' "$tmp/last-dialog"
 # Check an address in the restored watch-only wallet independently of ownership.
 wallet_data address "$first" large "${core_args[@]}" >"$tmp/watch-status"
 grep -q 'Watch-only: private keys disabled' "$tmp/watch-status"

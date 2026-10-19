@@ -66,11 +66,19 @@ to use a test node. `--check` tests the QR runtime without opening the menu.
   must be available to the receiving node. Transaction history and the wallet
   database are not transmitted. Older version 2 database exports remain
   importable. Update both computers before transferring wallets.
+  This is a JSON setup bundle, not the GUI's CSV address-book export.
+  To view restored labels, choose **Window → Receiving addresses** in Core.
+  Saved receive-request messages, requested amounts and dates are stored
+  separately by Core's GUI and are not exposed by the RPCs used here. They
+  are not included in compact exports. The QR window and import completion
+  dialog state this limitation; this transfer is not a complete wallet backup.
 
-The GTK menus use single-click buttons with bundled SVG icons directly beside
-their labels. The larger initial window shows all actions without scrolling.
-There is no decorative QR image or separate expanding icon column. **Close**
-and Escape exit the main menu. Zenity handles the other transfer dialogs.
+The menus use simple Zenity lists, with one action column and a larger initial
+window. There is no custom GTK menu or decorative QR image. Select an action
+and click **Open**, or double-click it. **Close** and Escape exit the main menu.
+Only the animated wallet QR viewer uses a small GTK drawing helper. It creates
+its first image synchronously and reports rendering failures to the caller;
+errors must not silently return success without showing a window.
 
 Scan QR opens the camera immediately. Send transaction opens the file picker
 immediately. Wallet export opens its QR window after wallet selection, without
@@ -116,6 +124,10 @@ symlinks are never overwritten.
   `gethdkeys` inventory, requires one associated HD key with `has_private=true`, and
   requires `deriveaddresses` at the address index to reproduce the scanned
   address exactly. It never requests private HD keys or unlocks wallets.
+  The comparison uses the validated canonical address returned by Core, since
+  Core uppercases Bech32 addresses inside its payment QR codes. Base58
+  addresses are never blindly lowercased. Each wallet result explicitly shows
+  the successful ownership check separately from signing-key status.
   Locked-wallet key possession can still be reported; signing requires unlock.
   Core may store a master xpub while displaying a normalized account xpub in
   the descriptor. These strings are not required to match; Core's association

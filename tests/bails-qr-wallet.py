@@ -28,7 +28,7 @@ class WalletTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name) / "transfer.json"
         self.calls = []
-        self.info = {"ismine": True, "parent_desc": PARENT, "hdkeypath": "m/84h/1h/0h/0/7"}
+        self.info = {"address": ADDRESS, "ismine": True, "parent_desc": PARENT, "hdkeypath": "m/84h/1h/0h/0/7"}
         self.status = {"private_keys_enabled": True, "descriptors": True, "blank": False}
         self.keys = [{"xpub": "tpubABC123", "has_private": True,
                       "descriptors": [{"desc": PARENT, "active": True}]}]
@@ -155,6 +155,22 @@ class WalletTests(unittest.TestCase):
         self.derived = ["bcrt1wrongaddress"]
         self.assertIn("derived address did not match", self.address())
         self.assertNotIn("Core confirms", self.address())
+
+    def test_core_uppercase_bech32_qr_uses_validated_canonical_address(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            wallet.transfer("address", ADDRESS.upper(), "offline", [])
+        self.assertIn("Core confirms", output.getvalue())
+        self.assertIn("Address ownership: confirmed", output.getvalue())
+
+    def test_base58_is_not_blindly_case_folded(self):
+        self.info["address"] = "1CaseSensitiveAddress"
+        self.derived = ["1casesensitiveaddress"]
+        self.assertIn("derived address did not match", self.address())
+
+    def test_missing_canonical_address_never_confirms(self):
+        self.info.pop("address")
+        self.assertIn("Key status not verified", self.address())
 
     def test_public_hd_key_is_not_confirmation(self):
         self.keys[0]["has_private"] = False

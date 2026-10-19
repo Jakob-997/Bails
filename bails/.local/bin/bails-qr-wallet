@@ -71,7 +71,11 @@ def key_status(rpc, address, wallet, info):
                 return "Key status not verified: missing or unsupported address derivation index."
             arguments.append(json.dumps([int(index), int(index)]))
         # Independently tie the stored descriptor/key to the exact scanned address.
-        if rpc("deriveaddresses", parent, *arguments) != [address]:
+        # Core's GUI deliberately uppercases Bech32 addresses in BIP21 QRs.
+        # getaddressinfo re-encodes the validated destination canonically;
+        # never lowercase arbitrary addresses (Base58 is case-sensitive).
+        canonical = info.get("address")
+        if not isinstance(canonical, str) or rpc("deriveaddresses", parent, *arguments) != [canonical]:
             return "Key status not verified: derived address did not match the scanned address."
         suffix = " Wallet is locked; unlock in Core to sign." if status.get("unlocked_until") == 0 else ""
         return "Core confirms the corresponding private HD key; derived address matches." + suffix
@@ -83,7 +87,8 @@ def address_report(rpc, address, wallet):
     info = rpc("getaddressinfo", address, selected=wallet)
     if not (info.get("ismine") is True or info.get("iswatchonly") is True):
         return None
-    report = "Wallet: " + json.dumps(wallet, ensure_ascii=False) + "\n" + key_status(rpc, address, wallet, info)
+    report = ("Wallet: " + json.dumps(wallet, ensure_ascii=False)
+              + "\nAddress ownership: confirmed by Bitcoin Core.\n" + key_status(rpc, address, wallet, info))
     if re.search(r"(?:sorted)?multi(?:_a)?\(", info.get("parent_desc", "")):
         report += "\nMultisig policy: this wallet may not hold all required signing keys. Additional signers may be required."
     return report

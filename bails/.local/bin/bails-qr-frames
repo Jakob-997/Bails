@@ -140,118 +140,79 @@ def make_png(frame):
     return png.getvalue()
 
 
-def menu(kind):
-    _GLib, Gtk = gtk_modules()
-    from gi.repository import Gdk, GdkPixbuf, Gio
-    app = Gtk.Application(application_id="org.bails.QRMenu", flags=Gio.ApplicationFlags.NON_UNIQUE)
-    selection = []
-    icons = Path(__file__).resolve().parent.parent / "share/icons/hicolor/scalable/apps"
-
-    def activate(application):
-        window = Gtk.ApplicationWindow(application=application,
-                                       title="Wallet tools" if kind == "wallet" else "QR transfer")
-        window.set_default_size(540, 440)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        for side in ("top", "bottom", "start", "end"):
-            getattr(box, "set_margin_" + side)(24)
-        choices = ([("Export watch-only wallet", "bails-send.svg", "Show public descriptors and saved labels as QR codes."),
-                    ("Receive watch-only wallet", "bails-qr.svg", "Scan a wallet export from the other computer.")]
-                   if kind == "wallet" else
-                   [("Scan QR", "bails-qr.svg", "Import a transaction or check an address across all wallets."),
-                    ("Send transaction", "bails-send.svg", "Show a saved PSBT as a QR code."),
-                    ("Wallet tools", "bails-wallet-tools.svg", "Export or receive a watch-only wallet.")])
-
-        def select(_button, value):
-            selection.append(value)
-            window.close()
-
-        for title, icon, description in choices:
-            button = Gtk.Button()
-            row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-            for side in ("top", "bottom", "start", "end"):
-                getattr(row, "set_margin_" + side)(10)
-            pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(str(icons / icon), 24, 24, True)
-            image = Gtk.Image.new_from_paintable(Gdk.Texture.new_for_pixbuf(pixbuf))
-            image.set_valign(Gtk.Align.CENTER)
-            text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-            text.set_hexpand(True)
-            label = Gtk.Label(label=title, xalign=0)
-            detail = Gtk.Label(label=description, xalign=0, wrap=True)
-            detail.add_css_class("dim-label")
-            text.append(label)
-            text.append(detail)
-            row.append(image)
-            row.append(text)
-            button.set_child(row)
-            button.connect("clicked", select, title)
-            box.append(button)
-        close = Gtk.Button(label="Back" if kind == "wallet" else "Close")
-        close.connect("clicked", lambda _button: window.close())
-        box.append(close)
-        window.set_child(box)
-        # Escape keeps the same close behavior as the other transfer dialogs.
-        controller = Gtk.EventControllerKey()
-        def key_pressed(_controller, keyval, _keycode, _state):
-            if keyval == Gdk.KEY_Escape:
-                window.close()
-                return True
-            return False
-        controller.connect("key-pressed", key_pressed)
-        window.add_controller(controller)
-        window.present()
-
-    app.connect("activate", activate)
-    app.run([])
-    if selection:
-        print(selection[0])
-
-
 def show(path):
     GLib, Gtk = gtk_modules()
-    from gi.repository import Gdk, GdkPixbuf, Gio
+    from gi.repository import Gdk
     with open(path, "rb") as source:
         frames = encode(source.read(MAX_FILE + 1))
-    app = Gtk.Application(application_id="org.bails.QRTransfer", flags=Gio.ApplicationFlags.NON_UNIQUE)
+    # Build the first frame synchronously. Gtk.Application activation callbacks
+    # can otherwise print an exception and leave the caller with a success code.
+    Gtk.init()
+    loop = GLib.MainLoop()
+    window = Gtk.Window(title="Watch-only wallet QR")
+    window.set_default_size(520, 640)
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+    for side in ("top", "bottom", "start", "end"):
+        getattr(box, "set_margin_" + side)(16)
+    picture = Gtk.Picture()
+    picture.set_size_request(320, 320)
+    picture.set_can_shrink(True)
+    picture.set_hexpand(True)
+    picture.set_vexpand(True)
+    label = Gtk.Label()
+    scope = Gtk.Label(label="Public descriptors and address labels only.\n"
+                           "Saved receive-request messages, amounts and dates are not included.",
+                      wrap=True)
+    close = Gtk.Button(label="Close")
+    close.connect("clicked", lambda _button: window.close())
+    for child in (picture, label, scope, close):
+        box.append(child)
+    window.set_child(box)
+    index = 0
+    cache = {}
+    timer = None
+    errors = []
 
-    def activate(application):
-        window = Gtk.ApplicationWindow(application=application, title="Watch-only wallet QR")
-        window.set_resizable(False)
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        for side in ("top", "bottom", "start", "end"):
-            getattr(box, "set_margin_" + side)(16)
-        picture = Gtk.Picture()
-        picture.set_size_request(584, 584)
-        label = Gtk.Label()
-        close = Gtk.Button(label="Close")
-        close.connect("clicked", lambda _button: window.close())
-        for child in (picture, label, close):
-            box.append(child)
-        window.set_child(box)
-        index = 0
-        cache = {}
+    def advance():
+        nonlocal index
+        if index not in cache:
+            cache[index] = Gdk.Texture.new_from_bytes(GLib.Bytes.new(make_png(frames[index])))
+            if len(cache) > 8:
+                cache.pop(next(iter(cache)))
+        picture.set_paintable(cache[index])
+        label.set_text(f"Scan on the other computer · QR {index + 1} of {len(frames)}")
+        index = (index + 1) % len(frames)
 
-        def advance():
-            nonlocal index
-            if index not in cache:
-                loader = GdkPixbuf.PixbufLoader.new_with_type("png")
-                loader.write(make_png(frames[index]))
-                loader.close()
-                if len(cache) == 8:
-                    cache.pop(next(iter(cache)))
-                cache[index] = Gdk.Texture.new_for_pixbuf(loader.get_pixbuf())
-            picture.set_paintable(cache[index])
-            label.set_text(f"Scan on the other computer · QR {index + 1} of {len(frames)}")
-            index = (index + 1) % len(frames)
+    def tick():
+        nonlocal timer
+        try:
+            advance()
             return True
+        except Exception as error:
+            errors.append(str(error))
+            timer = None
+            loop.quit()
+            return False
 
+    def closed(_window):
+        loop.quit()
+        return False
+
+    window.connect("close-request", closed)
+    try:
         advance()
-        timer = GLib.timeout_add(600, advance) if len(frames) > 1 else None
-        if timer:
-            window.connect("close-request", lambda _window: (GLib.source_remove(timer), False)[1])
+        if len(frames) > 1:
+            timer = GLib.timeout_add(600, tick)
         window.present()
-
-    app.connect("activate", activate)
-    app.run([])
+        loop.run()
+    except Exception as error:
+        raise ValueError("QR display failed: " + str(error)) from error
+    finally:
+        if timer is not None:
+            GLib.source_remove(timer)
+        window.destroy()
+    if errors:
+        raise ValueError("QR display failed: " + errors[0])
 
 
 def scan(path):
@@ -313,10 +274,8 @@ def main():
             gtk_modules()
         elif len(sys.argv) == 3 and sys.argv[1] in ("show", "scan"):
             (show if sys.argv[1] == "show" else scan)(sys.argv[2])
-        elif len(sys.argv) == 3 and sys.argv[1] == "menu" and sys.argv[2] in ("main", "wallet"):
-            menu(sys.argv[2])
         else:
-            raise ValueError("Usage: bails-qr-frames show|scan FILE, or menu main|wallet")
+            raise ValueError("Usage: bails-qr-frames show|scan FILE")
     except Cancelled:
         return 2
     except (ValueError, OSError, ImportError, zlib.error) as error:

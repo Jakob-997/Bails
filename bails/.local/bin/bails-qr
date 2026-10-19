@@ -30,7 +30,19 @@ wallet_rpc() { rpc -rpcwallet="$wallet" "$@"; }
 wallet_frames() { python3 "$(dirname -- "${BASH_SOURCE[0]}")/bails-qr-frames" "$@"; }
 
 wallet_data() { python3 "$(dirname -- "${BASH_SOURCE[0]}")/bails-qr-wallet" "$@"; }
-choose_action() { wallet_frames menu "$1"; }
+choose_action() {
+    if [[ $1 == wallet ]]; then
+        dialog --list --column=Action --hide-header --width=540 --height=300 \
+            --title='Wallet tools' --ok-label=Open --cancel-label=Back \
+            --text='Set up the online watch-only wallet.' \
+            'Export watch-only wallet' 'Receive watch-only wallet'
+    else
+        dialog --list --column=Action --hide-header --width=540 --height=340 \
+            --ok-label=Open --cancel-label=Close \
+            --text='Scan a transaction or check an address across all wallets.' \
+            'Scan QR' 'Send transaction' 'Wallet tools'
+    fi
+}
 
 choose_wallet() {
     local wallets index
@@ -113,7 +125,7 @@ receive_wallet() {
     wallet_data import "$tmp/payload" "$name" "${core_args[@]}" 2>"$tmp/frames-error" || {
         fail "$(cat "$tmp/frames-error")"; return 1;
     }
-    dialog --info --text='Watch-only wallet loaded in Bitcoin Core. Addresses and labels imported. Verify a receive address on your offline wallet before using it.'
+    dialog --info --text='Watch-only wallet loaded in Bitcoin Core. Addresses and labels imported.\n\nTo view your old labels, choose Window → Receiving addresses in Bitcoin Core.\n\nCompact exports do not include saved receive-request messages, requested amounts, or request dates.\n\nVerify a receive address on your offline wallet before using it.'
 }
 
 validate_psbt() {
