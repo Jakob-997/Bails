@@ -9,7 +9,7 @@ BBQr wallet frames using the QR and GTK modules already required on Tails 7.
 On Tails, install the complete fork (including Bitcoin Core and QR transfer):
 
 ```sh
-git clone --branch master https://github.com/Jakob-997/Bails.git bails-qr-test
+git clone --branch qr-wallet-checks https://github.com/Jakob-997/Bails.git bails-qr-test
 bash bails-qr-test/b
 ```
 
