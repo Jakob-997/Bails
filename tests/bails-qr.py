@@ -32,8 +32,12 @@ class StaticQRTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
 
-    def scan(self, payload, kind="Receive PSBT"):
+    def scan(self, payload, kind="Receive PSBT", copy=True):
         gtk = MagicMock()
+        gtk.ResponseType.APPLY = 1
+        gtk.MessageDialog.return_value.run.side_effect = [1, 2] if copy else [2]
+        buffer = gtk.TextView.return_value.get_buffer.return_value
+        buffer.get_bounds.return_value = ("start", "end")
         with patch.dict(sys.modules, {"gi": MagicMock(), "gi.repository": MagicMock(Gtk=gtk)}), \
                 patch.object(qr, "run", return_value=payload), \
                 patch.object(qr, "save") as save, patch.object(qr, "dialog"), \
@@ -41,10 +45,13 @@ class StaticQRTests(unittest.TestCase):
             qr.scan(kind)
             if kind == "Receive PSBT":
                 save.assert_not_called()
-                clipboard = gtk.Clipboard.get.return_value
                 sys.modules["gi"].require_versions.assert_called_once_with({"Gtk": "3.0", "Gdk": "3.0"})
-                clipboard.store.assert_called_once()
-                return base64.b64decode(clipboard.set_text.call_args.args[0])
+                if copy:
+                    buffer.select_range.assert_called_once_with("start", "end")
+                    buffer.copy_clipboard.assert_called_once_with(gtk.Clipboard.get.return_value)
+                else:
+                    buffer.copy_clipboard.assert_not_called()
+                return base64.b64decode(buffer.set_text.call_args.args[0])
             return save.call_args.args
 
     def show(self, payload, original, name):
@@ -63,16 +70,8 @@ class StaticQRTests(unittest.TestCase):
             expected = PSBT + b"\n" if payload == PSBT + b"\n" else PSBT
             self.assertEqual(self.scan(payload), expected)
 
-    def test_clipboard_event_processing_preserves_command_results(self):
-        gtk = MagicMock()
-        gtk.events_pending.return_value = False
-        with patch.dict(sys.modules, {"gi.repository.Gtk": gtk}):
-            self.assertEqual(qr.run(sys.executable, "-c", "print('ok')").strip(), b"ok")
-            with self.assertRaises(subprocess.CalledProcessError) as failure:
-                qr.run(sys.executable, "-c", "import sys; sys.stderr.write('failed'); sys.exit(7)")
-            self.assertEqual((failure.exception.returncode, failure.exception.stderr), (7, b"failed"))
-            with self.assertRaises(subprocess.TimeoutExpired):
-                qr.run(sys.executable, "-c", "import time; time.sleep(5)", timeout=0.05)
+    def test_psbt_is_not_copied_without_clicking_copy(self):
+        self.assertEqual(self.scan(PSBT, copy=False), PSBT)
 
     def test_compressed_wallet_image_roundtrip(self):
         wallet = self.directory / "fixture.dat"

@@ -48,13 +48,12 @@ they are forwarded to `bitcoin-cli`.
    Both binary and Base64 PSBT files are accepted.
 
 3. On the other computer, choose **Receive PSBT**. Core checks that the transaction
-   decodes, then the tool copies its Base64 text to the clipboard.
-   Dismiss the confirmation message, then load the transaction in Core.
-   Keep **QR transfer** running until Core has loaded it. The tool serves the
-   clipboard while its menu is open, without relying on a clipboard manager.
+   decodes, then the tool shows its Base64 text. Click **Copy**, or select the
+   text and press **Ctrl+C**.
 
 4. In Core, select your wallet, then choose **File** > **Load PSBT from clipboard**. Review the transaction
    before signing or broadcasting. The QR tool does neither.
+   Close the text window after loading it in Core.
 
 Scanning also accepts the gzip-compressed PSBT format in the manual
 [CryoStick instructions](CRYOSTICK.md). It does not accept Sparrow's UR or

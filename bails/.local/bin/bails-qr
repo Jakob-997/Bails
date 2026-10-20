@@ -3,7 +3,6 @@
 # Distributed under the MIT license; see LICENSE.
 """Static QR transfers; Bitcoin Core owns wallet export and transaction review."""
 import base64
-from concurrent.futures import ThreadPoolExecutor, wait
 import gzip
 import io
 import json
@@ -24,16 +23,7 @@ class Cancelled(Exception):
 
 
 def run(*args, **kwargs):
-    gtk = sys.modules.get("gi.repository.Gtk")
-    if gtk is None:
-        return subprocess.run(args, capture_output=True, check=True, **kwargs).stdout
-    with ThreadPoolExecutor(max_workers=1) as worker:
-        result = worker.submit(subprocess.run, args, capture_output=True, check=True, **kwargs)
-        while not result.done():
-            while gtk.events_pending():
-                gtk.main_iteration_do(False)
-            wait([result], timeout=0.02)
-        return result.result().stdout
+    return subprocess.run(args, capture_output=True, check=True, **kwargs).stdout
 
 
 def dialog(*args):
@@ -120,10 +110,20 @@ def scan(kind):
         import gi
         gi.require_versions({"Gtk": "3.0", "Gdk": "3.0"})
         from gi.repository import Gdk, Gtk
-        clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
-        clipboard.set_text(base64.b64encode(psbt_bytes(data)).decode("ascii"), -1)
-        clipboard.store()
-        dialog("--info", "--text=PSBT copied to the clipboard. In Bitcoin Core, select your wallet, then choose File > Load PSBT from clipboard.")
+        text = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.CHAR)
+        buffer = text.get_buffer()
+        buffer.set_text(base64.b64encode(psbt_bytes(data)).decode("ascii"))
+        scroll = Gtk.ScrolledWindow(min_content_width=500, min_content_height=150)
+        scroll.add(text)
+        notice = Gtk.MessageDialog(message_type=Gtk.MessageType.INFO, buttons=Gtk.ButtonsType.CLOSE,
+                                   text="Copy the text below. In Bitcoin Core, select your wallet, then choose File > Load PSBT from clipboard.")
+        notice.get_content_area().pack_start(scroll, True, True, 0)
+        notice.add_button("Copy", Gtk.ResponseType.APPLY)
+        notice.show_all()
+        while notice.run() == Gtk.ResponseType.APPLY:
+            buffer.select_range(*buffer.get_bounds())
+            buffer.copy_clipboard(Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD))
+        notice.destroy()
     else:
         address = data.decode("ascii", errors="replace").strip()
         if address.lower().startswith("bitcoin:"):
