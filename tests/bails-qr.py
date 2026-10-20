@@ -63,6 +63,17 @@ class StaticQRTests(unittest.TestCase):
             expected = PSBT + b"\n" if payload == PSBT + b"\n" else PSBT
             self.assertEqual(self.scan(payload), expected)
 
+    def test_clipboard_event_processing_preserves_command_results(self):
+        gtk = MagicMock()
+        gtk.events_pending.return_value = False
+        with patch.dict(sys.modules, {"gi.repository.Gtk": gtk}):
+            self.assertEqual(qr.run(sys.executable, "-c", "print('ok')").strip(), b"ok")
+            with self.assertRaises(subprocess.CalledProcessError) as failure:
+                qr.run(sys.executable, "-c", "import sys; sys.stderr.write('failed'); sys.exit(7)")
+            self.assertEqual((failure.exception.returncode, failure.exception.stderr), (7, b"failed"))
+            with self.assertRaises(subprocess.TimeoutExpired):
+                qr.run(sys.executable, "-c", "import time; time.sleep(5)", timeout=0.05)
+
     def test_compressed_wallet_image_roundtrip(self):
         wallet = self.directory / "fixture.dat"
         with sqlite3.connect(wallet) as connection:

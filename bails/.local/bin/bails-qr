@@ -3,6 +3,7 @@
 # Distributed under the MIT license; see LICENSE.
 """Static QR transfers; Bitcoin Core owns wallet export and transaction review."""
 import base64
+from concurrent.futures import ThreadPoolExecutor, wait
 import gzip
 import io
 import json
@@ -23,7 +24,16 @@ class Cancelled(Exception):
 
 
 def run(*args, **kwargs):
-    return subprocess.run(args, capture_output=True, check=True, **kwargs).stdout
+    gtk = sys.modules.get("gi.repository.Gtk")
+    if gtk is None:
+        return subprocess.run(args, capture_output=True, check=True, **kwargs).stdout
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        result = worker.submit(subprocess.run, args, capture_output=True, check=True, **kwargs)
+        while not result.done():
+            while gtk.events_pending():
+                gtk.main_iteration_do(False)
+            wait([result], timeout=0.02)
+        return result.result().stdout
 
 
 def dialog(*args):
