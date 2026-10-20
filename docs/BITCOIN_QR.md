@@ -50,7 +50,7 @@ they are forwarded to `bitcoin-cli`.
 
 3. On the other computer, choose **Receive PSBT**. Core checks that the transaction
    decodes, then the tool copies its Base64 text to the clipboard.
-   Leave the confirmation message open until Core has loaded it.
+   Dismiss the confirmation message, then load the transaction in Core.
 
 4. In Core, select your wallet, then choose **File** > **Load PSBT from clipboard**. Review the transaction
    before signing or broadcasting. The QR tool does neither.

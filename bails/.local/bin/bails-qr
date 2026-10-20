@@ -113,10 +113,7 @@ def scan(kind):
         clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
         clipboard.set_text(base64.b64encode(psbt_bytes(data)).decode("ascii"), -1)
         clipboard.store()
-        notice = Gtk.MessageDialog(message_type=Gtk.MessageType.INFO, buttons=Gtk.ButtonsType.CLOSE,
-                                   text="PSBT copied to the clipboard. In Bitcoin Core, select your wallet, then choose File > Load PSBT from clipboard. Close this message after loading it.")
-        notice.run()
-        notice.destroy()
+        dialog("--info", "--text=PSBT copied to the clipboard. In Bitcoin Core, select your wallet, then choose File > Load PSBT from clipboard.")
     else:
         address = data.decode("ascii", errors="replace").strip()
         if address.lower().startswith("bitcoin:"):
