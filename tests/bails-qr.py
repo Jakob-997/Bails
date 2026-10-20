@@ -42,6 +42,7 @@ class StaticQRTests(unittest.TestCase):
             if kind == "Receive PSBT":
                 save.assert_not_called()
                 clipboard = gtk.Clipboard.get.return_value
+                sys.modules["gi"].require_versions.assert_called_once_with({"Gtk": "3.0", "Gdk": "3.0"})
                 clipboard.store.assert_called_once()
                 return base64.b64decode(clipboard.set_text.call_args.args[0])
             return save.call_args.args
@@ -51,6 +52,7 @@ class StaticQRTests(unittest.TestCase):
         modules = {"gi": MagicMock(), "gi.repository": MagicMock(Gtk=gtk)}
         with patch.dict(sys.modules, modules), patch.object(qr, "dialog") as dialog:
             qr.show(payload, original, name, self.directory)
+            sys.modules["gi"].require_versions.assert_called_once_with({"Gtk": "3.0", "Gdk": "3.0"})
             dialog.assert_not_called()
             gtk.Window.return_value.fullscreen.assert_called_once()
             gtk.Window.return_value.present.assert_called_once()

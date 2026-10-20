@@ -79,7 +79,7 @@ def save(data, name):
 def show(data, original, name, directory):
     import qrcode
     import gi
-    gi.require_version("Gtk", "3.0")
+    gi.require_versions({"Gtk": "3.0", "Gdk": "3.0"})
     from gi.repository import Gdk, Gtk
     if len(data) > 2953:
         dialog("--info", "--text=This file is too large for one static QR. Save it for USB or microSD transfer.")
@@ -124,7 +124,7 @@ def scan(kind):
         if not data.startswith((b"psbt\xff", b"cHNidP")):
             raise ValueError("Expected a PSBT QR. Use Verify Receiving Address for receive addresses.")
         import gi
-        gi.require_version("Gtk", "3.0")
+        gi.require_versions({"Gtk": "3.0", "Gdk": "3.0"})
         from gi.repository import Gdk, Gtk
         clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
         clipboard.set_text(base64.b64encode(psbt_bytes(data)).decode("ascii"), -1)
