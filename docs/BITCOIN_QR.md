@@ -2,7 +2,7 @@
 
 Open **CipherStick** > **QR transfer**, or the **QR transfer** application.
 This tool uses one static QR per transfer. It does not use BBQr or UR.
-The main menu offers **Verify Address**, **Receive PSBT**, **Send PSBT**,
+The main menu offers **Verify Receiving Address**, **Receive PSBT**, **Send PSBT**,
 and **Wallet Tools**. Each scanning action accepts only its selected type.
 
 ## Requirements
@@ -58,7 +58,7 @@ BBQr QR exports; save a PSBT file in Sparrow for the return trip.
 
 ## Check a receive address
 
-Choose **Verify Address** and scan an address or a `bitcoin:` payment URI. The tool
+Choose **Verify Receiving Address** and scan an address or a `bitcoin:` payment URI. The tool
 checks Core's `ismine` result across the open wallets automatically. Open your
 signing wallet in Core first; no wallet selection is needed for this check.
 An owned address shows **You own this address**. An address that none of the open

@@ -106,7 +106,7 @@ def scan(kind):
         dialog("--info", "--text=In Bitcoin Core, choose File > Restore Wallet and select the saved wallet.dat file.")
     elif kind == "Receive PSBT":
         if not data.startswith((b"psbt\xff", b"cHNidP")):
-            raise ValueError("Expected a PSBT QR. Use Verify Address for receive addresses.")
+            raise ValueError("Expected a PSBT QR. Use Verify Receiving Address for receive addresses.")
         save(psbt_bytes(data), "received.psbt")
         dialog("--info", "--text=In Bitcoin Core, choose File > Load PSBT from file to review the saved transaction.")
     else:
@@ -142,14 +142,14 @@ def main():
         return
     with tempfile.TemporaryDirectory(prefix="bails-qr-", dir="/tmp") as directory:
         while True:
-            action = dialog("--list", "--column=Action", "Verify Address", "Receive PSBT", "Send PSBT", "Wallet Tools")
+            action = dialog("--list", "--column=Action", "Verify Receiving Address", "Receive PSBT", "Send PSBT", "Wallet Tools")
             if not action:
                 return
             try:
                 if action == "Wallet Tools":
                     action = dialog("--list", "--title=Wallet Tools", "--column=Action",
                                     "Export Watch-Only Wallet", "Import Watch-Only Wallet")
-                if action in ("Verify Address", "Receive PSBT", "Import Watch-Only Wallet"):
+                if action in ("Verify Receiving Address", "Receive PSBT", "Import Watch-Only Wallet"):
                     scan(action)
                 elif action == "Send PSBT":
                     path = dialog("--file-selection", "--title=Choose a saved PSBT")
