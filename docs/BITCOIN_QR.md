@@ -41,11 +41,10 @@ they are forwarded to `bitcoin-cli`.
 
 ## Transfer a PSBT
 
-1. Save an unsigned or signed PSBT from Bitcoin Core.
+1. Copy an unsigned or signed PSBT as text from Bitcoin Core.
 
-2. Choose **Send PSBT** and select the file. Core checks that it decodes.
+2. Choose **Send PSBT**, paste the text into the box, and click **OK**. Core checks that it decodes.
    The static QR contains its Base64 representation, which Sparrow can scan.
-   Both binary and Base64 PSBT files are accepted.
 
 3. On the other computer, choose **Receive PSBT**. Core checks that the transaction
    decodes, then the tool shows its Base64 text. Click **Copy**, or select the
@@ -57,7 +56,7 @@ they are forwarded to `bitcoin-cli`.
 
 Scanning also accepts the gzip-compressed PSBT format in the manual
 [CryoStick instructions](CRYOSTICK.md). It does not accept Sparrow's UR or
-BBQr QR exports; save a PSBT file in Sparrow for the return trip.
+BBQr QR exports; copy the PSBT as Base64 text in Sparrow for the return trip.
 
 ## Check a receive address
 

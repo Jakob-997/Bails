@@ -73,6 +73,23 @@ class StaticQRTests(unittest.TestCase):
     def test_psbt_is_not_copied_without_clicking_copy(self):
         self.assertEqual(self.scan(PSBT, copy=False), PSBT)
 
+    def test_send_psbt_accepts_pasted_text_and_validates_before_display(self):
+        encoded = base64.b64encode(PSBT)
+        with patch.object(qr.shutil, "which", return_value="available"), \
+                patch.object(qr.tempfile, "TemporaryDirectory", return_value=self.temporary), \
+                patch.object(qr, "dialog", side_effect=["Send PSBT", encoded.decode(), qr.Cancelled]) as dialog, \
+                patch.object(qr, "rpc", return_value={}) as rpc, \
+                patch.object(qr, "show") as show, self.assertRaises(qr.Cancelled):
+            qr.main()
+        self.assertIn("--entry", dialog.call_args_list[1].args)
+        rpc.assert_called_once_with("decodepsbt", data=encoded + b"\n")
+        self.assertEqual(show.call_args.args[:3], (encoded, PSBT, "transaction.psbt"))
+
+    def test_oversized_pasted_psbt_does_not_reach_core(self):
+        with patch.object(qr, "rpc") as rpc, self.assertRaisesRegex(ValueError, "larger than 1 MiB"):
+            qr.psbt_bytes(base64.b64encode(PSBT + b"x" * qr.MAX_FILE))
+        rpc.assert_not_called()
+
     def test_compressed_wallet_image_roundtrip(self):
         wallet = self.directory / "fixture.dat"
         with sqlite3.connect(wallet) as connection:

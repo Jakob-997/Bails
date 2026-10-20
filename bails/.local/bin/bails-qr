@@ -65,6 +65,8 @@ def read_file(path):
 def psbt_bytes(data):
     if not data.startswith(b"psbt\xff"):
         data = base64.b64decode(data.strip(), validate=True)
+    if len(data) > MAX_FILE:
+        raise ValueError("The PSBT is larger than 1 MiB. Use file transfer.")
     rpc("decodepsbt", data=base64.b64encode(data) + b"\n")
     return data
 
@@ -162,8 +164,7 @@ def main():
                 if action in ("Verify Receiving Address", "Receive PSBT", "Import Watch-Only Wallet"):
                     scan(action)
                 elif action == "Send PSBT":
-                    path = dialog("--file-selection", "--title=Choose a saved PSBT")
-                    data = psbt_bytes(read_file(path))
+                    data = psbt_bytes(dialog("--entry", "--title=Send PSBT", "--text=Paste the PSBT text copied from Bitcoin Core.").encode("ascii"))
                     show(base64.b64encode(data), data, "transaction.psbt", directory)
                 elif action == "Export Watch-Only Wallet":
                     wallet = wallet_name()
