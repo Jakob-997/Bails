@@ -125,10 +125,10 @@ def scan(kind):
         else:
             dialog("--warning", "--title=WARNING: Address not owned",
                    f"--text=⚠ WARNING: You do not own this address.\n\n{address}\n\n"
-                   "None of your open Bitcoin Core wallets recognize it.\n\n"
-                   "If this address came from your watch-only wallet, confirm the receive address "
-                   "again on your offline signing wallet. If it still does not match, your "
-                   "watch-only wallet or computer may be compromised. Do not send funds to this address.")
+                   "None of your open Bitcoin Core wallets recognize this address.\n\n"
+                   "Check again carefully that you are requesting a receiving address from your "
+                   "watch-only wallet. If this address truly came from that wallet, "
+                   "the computer running it may be compromised. Do not send funds to this address.")
 
 
 def main():
