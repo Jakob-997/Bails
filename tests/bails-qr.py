@@ -40,11 +40,7 @@ class StaticQRTests(unittest.TestCase):
             return save.call_args.args
 
     def show(self, payload, original, name):
-        def command(*args, **kwargs):
-            if args[0] == "python3-qr":
-                return subprocess.check_output([sys.executable, "-m", "qrcode.console_scripts", *args[1:]], **kwargs)
-            return b""
-        with patch.object(qr, "run", side_effect=command) as run, patch.object(qr, "dialog") as dialog:
+        with patch.object(qr, "run", return_value=b"") as run, patch.object(qr, "dialog") as dialog:
             qr.show(payload, original, name, self.directory)
             dialog.assert_not_called()
             self.assertEqual(run.call_args.args[0], "xdg-open")
@@ -103,6 +99,17 @@ class StaticQRTests(unittest.TestCase):
         for invalid in (data[:-1], data[:-8] + b"\xff" * 8):
             with self.assertRaises((OSError, EOFError)):
                 self.scan(invalid)
+
+    def test_images_fit_720_screen_without_resampling(self):
+        for size in (100, 700, 1500, 2953):
+            payload = bytes((i * 73 + 19) % 256 for i in range(size))
+            image = Image.open(self.show(payload, payload, "wallet.dat"))
+            self.assertEqual(image.width, image.height)
+            self.assertLessEqual(image.height, 660)
+            self.assertEqual(set(image.convert("L").tobytes()), {0, 255})
+            result = zxingcpp.read_barcode(image)
+            self.assertIsNotNone(result)
+            self.assertEqual(result.bytes, payload)
 
     def test_core_validates_psbt_and_receives_options(self):
         with patch.object(qr, "run", return_value=b"{}") as run:

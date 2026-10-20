@@ -9,8 +9,8 @@ and **Wallet Tools**. Each scanning action accepts only its selected type.
 
 Use the normal Bails installation on Tails, with Bitcoin Core running.
 The tool uses `bitcoin-cli`, Zenity, `zbarcam` from `zbar-tools`, `xdg-open`,
-Python 3, and Tails' `python3-qr` command from `python3-qrcode`. It uses that
-command's default PNG renderer without selecting PIL or another image factory.
+Python 3, and Tails' `python3-qrcode` library and `python3-qr` command. It uses the
+library's default PNG renderer without selecting PIL or another image factory.
 It installs nothing.
 Run `bails-qr --check` to check the local dependencies. Wallet export also
 requires Core's `exportwatchonlywallet` RPC (Core 32 or later).
@@ -88,6 +88,8 @@ Use a new filename. To transfer without a camera:
 The QR opens directly in the normal image viewer without a separate instruction
 popup. Each transfer uses a new image file, so an earlier image cannot be reused
 by the viewer for a different transfer. Close the QR image after scanning.
+Images fit within 660 pixels for a 720-pixel-high screen, with whole pixels per
+QR square and the standard white border. The viewer still controls window size.
 
 The QR tool keeps working files in `/tmp` with private permissions and removes
 them when it exits normally. Saved files are written only where you choose;
@@ -96,8 +98,8 @@ existing files are not overwritten.
 ## Validation
 
 Run `python3 tests/bails-qr.py` with `qrcode`, Pillow, and `zxing-cpp`
-available in the test environment. The QR tests invoke the upstream generator's
-command entry point and decode its PNG output independently.
+available in the test environment. The QR tests use the upstream generator
+and decode its PNG output independently.
 
 The Windows development checks cover QR image round trips with an independent
 decoder, compressed wallet bytes, raw oneshot scan output without an appended

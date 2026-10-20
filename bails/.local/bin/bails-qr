@@ -77,12 +77,18 @@ def save(data, name):
 
 
 def show(data, original, name, directory):
+    import qrcode
     if len(data) > 2953:
         dialog("--info", "--text=This file is too large for one static QR. Save it for USB or microSD transfer.")
         save(original, name)
         return
     with tempfile.NamedTemporaryFile(suffix=".png", dir=directory, delete=False) as image:
-        image.write(run("python3-qr", "--error-correction=L", input=data))
+        code = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L)
+        code.add_data(data)
+        code.make()
+        # Leave room for window controls on a 720-pixel screen; keep whole pixels.
+        code.box_size = 660 // (code.modules_count + 2 * code.border)
+        code.make_image().save(image)
     run("xdg-open", image.name)
 
 
