@@ -77,29 +77,13 @@ def save(data, name):
 
 
 def show(data, original, name, directory):
-    import qrcode
-    import gi
-    gi.require_versions({"Gtk": "3.0", "Gdk": "3.0"})
-    from gi.repository import Gdk, Gtk
     if len(data) > 2953:
         dialog("--info", "--text=This file is too large for one static QR. Save it for USB or microSD transfer.")
         save(original, name)
         return
     with tempfile.NamedTemporaryFile(suffix=".png", dir=directory, delete=False) as image:
-        code = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L)
-        code.add_data(data)
-        code.make()
-        # Fullscreen on a 720-pixel screen, with whole pixels per QR square.
-        code.box_size = 720 // (code.modules_count + 2 * code.border)
-        code.make_image().save(image)
-    window = Gtk.Window(title="QR transfer — close when finished")
-    window.add(Gtk.Image.new_from_file(image.name))
-    window.connect("destroy", Gtk.main_quit)
-    window.connect("key-press-event", lambda w, event: w.close() if event.keyval == Gdk.KEY_Escape else False)
-    window.fullscreen()
-    window.show_all()
-    window.present()
-    Gtk.main()
+        image.write(run("python3-qr", "--error-correction=L", input=data))
+    run("xdg-open", image.name)
 
 
 def scan(kind):
@@ -156,7 +140,7 @@ def scan(kind):
 
 
 def main():
-    for command in ("zenity", "bitcoin-cli", "zbarcam", "python3-qr"):
+    for command in ("zenity", "bitcoin-cli", "zbarcam", "python3-qr", "xdg-open"):
         if not shutil.which(command):
             raise ValueError(f"Missing {command}. See docs/BITCOIN_QR.md for requirements.")
     if CORE_ARGS == ["--check"]:

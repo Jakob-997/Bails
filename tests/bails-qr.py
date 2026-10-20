@@ -48,16 +48,15 @@ class StaticQRTests(unittest.TestCase):
             return save.call_args.args
 
     def show(self, payload, original, name):
-        gtk = MagicMock()
-        modules = {"gi": MagicMock(), "gi.repository": MagicMock(Gtk=gtk)}
-        with patch.dict(sys.modules, modules), patch.object(qr, "dialog") as dialog:
+        def command(*args, **kwargs):
+            if args[0] == "python3-qr":
+                return subprocess.check_output([sys.executable, "-m", "qrcode.console_scripts", *args[1:]], **kwargs)
+            return b""
+        with patch.object(qr, "run", side_effect=command) as run, patch.object(qr, "dialog") as dialog:
             qr.show(payload, original, name, self.directory)
-            sys.modules["gi"].require_versions.assert_called_once_with({"Gtk": "3.0", "Gdk": "3.0"})
             dialog.assert_not_called()
-            gtk.Window.return_value.fullscreen.assert_called_once()
-            gtk.Window.return_value.present.assert_called_once()
-            gtk.main.assert_called_once()
-            return Path(gtk.Image.new_from_file.call_args.args[0])
+            self.assertEqual(run.call_args.args[0], "xdg-open")
+            return Path(run.call_args.args[1])
 
     def test_psbt_formats_and_binary_newline(self):
         for payload in (PSBT, base64.b64encode(PSBT), gzip.compress(PSBT), PSBT + b"\n"):
@@ -86,8 +85,7 @@ class StaticQRTests(unittest.TestCase):
         self.assertEqual(self.scan(result.bytes), PSBT)
 
     def test_size_limits_and_file_fallback(self):
-        with patch.dict(sys.modules, {"gi": MagicMock(), "gi.repository": MagicMock()}), \
-                patch.object(qr, "save") as save, patch.object(qr, "dialog"), patch.object(qr, "run") as run:
+        with patch.object(qr, "save") as save, patch.object(qr, "dialog"), patch.object(qr, "run") as run:
             qr.show(b"x" * 2954, PSBT, "transaction.psbt", self.directory)
             save.assert_called_once_with(PSBT, "transaction.psbt")
             run.assert_not_called()
@@ -114,12 +112,11 @@ class StaticQRTests(unittest.TestCase):
             with self.assertRaises((OSError, EOFError)):
                 self.scan(invalid)
 
-    def test_images_fit_720_screen_without_resampling(self):
+    def test_generated_images_decode_at_various_payload_sizes(self):
         for size in (100, 700, 1500, 2953):
             payload = bytes((i * 73 + 19) % 256 for i in range(size))
             image = Image.open(self.show(payload, payload, "wallet.dat"))
             self.assertEqual(image.width, image.height)
-            self.assertLessEqual(image.height, 720)
             self.assertEqual(set(image.convert("L").tobytes()), {0, 255})
             result = zxingcpp.read_barcode(image)
             self.assertIsNotNone(result)
