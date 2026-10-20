@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from PIL import Image
 import zxingcpp
@@ -40,11 +40,15 @@ class StaticQRTests(unittest.TestCase):
             return save.call_args.args
 
     def show(self, payload, original, name):
-        with patch.object(qr, "run", return_value=b"") as run, patch.object(qr, "dialog") as dialog:
+        gtk = MagicMock()
+        modules = {"gi": MagicMock(), "gi.repository": MagicMock(Gtk=gtk)}
+        with patch.dict(sys.modules, modules), patch.object(qr, "dialog") as dialog:
             qr.show(payload, original, name, self.directory)
             dialog.assert_not_called()
-            self.assertEqual(run.call_args.args[0], "xdg-open")
-            return Path(run.call_args.args[1])
+            gtk.Window.return_value.fullscreen.assert_called_once()
+            gtk.Window.return_value.present.assert_called_once()
+            gtk.main.assert_called_once()
+            return Path(gtk.Image.new_from_file.call_args.args[0])
 
     def test_psbt_formats_and_binary_newline(self):
         for payload in (PSBT, base64.b64encode(PSBT), gzip.compress(PSBT), PSBT + b"\n"):
@@ -73,7 +77,8 @@ class StaticQRTests(unittest.TestCase):
         self.assertEqual(self.scan(result.bytes), (PSBT, "received.psbt"))
 
     def test_size_limits_and_file_fallback(self):
-        with patch.object(qr, "save") as save, patch.object(qr, "dialog"), patch.object(qr, "run") as run:
+        with patch.dict(sys.modules, {"gi": MagicMock(), "gi.repository": MagicMock()}), \
+                patch.object(qr, "save") as save, patch.object(qr, "dialog"), patch.object(qr, "run") as run:
             qr.show(b"x" * 2954, PSBT, "transaction.psbt", self.directory)
             save.assert_called_once_with(PSBT, "transaction.psbt")
             run.assert_not_called()
@@ -105,7 +110,7 @@ class StaticQRTests(unittest.TestCase):
             payload = bytes((i * 73 + 19) % 256 for i in range(size))
             image = Image.open(self.show(payload, payload, "wallet.dat"))
             self.assertEqual(image.width, image.height)
-            self.assertLessEqual(image.height, 660)
+            self.assertLessEqual(image.height, 720)
             self.assertEqual(set(image.convert("L").tobytes()), {0, 255})
             result = zxingcpp.read_barcode(image)
             self.assertIsNotNone(result)

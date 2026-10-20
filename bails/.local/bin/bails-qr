@@ -78,6 +78,9 @@ def save(data, name):
 
 def show(data, original, name, directory):
     import qrcode
+    import gi
+    gi.require_version("Gtk", "3.0")
+    from gi.repository import Gdk, Gtk
     if len(data) > 2953:
         dialog("--info", "--text=This file is too large for one static QR. Save it for USB or microSD transfer.")
         save(original, name)
@@ -86,10 +89,17 @@ def show(data, original, name, directory):
         code = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L)
         code.add_data(data)
         code.make()
-        # Leave room for window controls on a 720-pixel screen; keep whole pixels.
-        code.box_size = 660 // (code.modules_count + 2 * code.border)
+        # Fullscreen on a 720-pixel screen, with whole pixels per QR square.
+        code.box_size = 720 // (code.modules_count + 2 * code.border)
         code.make_image().save(image)
-    run("xdg-open", image.name)
+    window = Gtk.Window(title="QR transfer — close when finished")
+    window.add(Gtk.Image.new_from_file(image.name))
+    window.connect("destroy", Gtk.main_quit)
+    window.connect("key-press-event", lambda w, event: w.close() if event.keyval == Gdk.KEY_Escape else False)
+    window.fullscreen()
+    window.show_all()
+    window.present()
+    Gtk.main()
 
 
 def scan(kind):
@@ -133,12 +143,12 @@ def scan(kind):
                    f"--text=⚠ WARNING: You do not own this address.\n\n{address}\n\n"
                    "None of your open Bitcoin Core wallets recognize this address.\n\n"
                    "Check again carefully that you are requesting a receiving address from your "
-                   "watch-only wallet. If this address truly came from that wallet, "
+                   "watch-only wallet. If this address truly came from that wallet and this is not a mistake, "
                    "the computer running it may be compromised. Do not send funds to this address.")
 
 
 def main():
-    for command in ("zenity", "bitcoin-cli", "zbarcam", "python3-qr", "xdg-open"):
+    for command in ("zenity", "bitcoin-cli", "zbarcam", "python3-qr"):
         if not shutil.which(command):
             raise ValueError(f"Missing {command}. See docs/BITCOIN_QR.md for requirements.")
     if CORE_ARGS == ["--check"]:

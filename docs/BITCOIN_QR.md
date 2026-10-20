@@ -8,7 +8,7 @@ and **Wallet Tools**. Each scanning action accepts only its selected type.
 ## Requirements
 
 Use the normal Bails installation on Tails, with Bitcoin Core running.
-The tool uses `bitcoin-cli`, Zenity, `zbarcam` from `zbar-tools`, `xdg-open`,
+The tool uses `bitcoin-cli`, Zenity, `zbarcam` from `zbar-tools`, Tails' GTK 3 Python bindings,
 Python 3, and Tails' `python3-qrcode` library and `python3-qr` command. It uses the
 library's default PNG renderer without selecting PIL or another image factory.
 It installs nothing.
@@ -85,11 +85,10 @@ Use a new filename. To transfer without a camera:
 
 3. Restore the watch-only file, or load the PSBT, using the Core menu above.
 
-The QR opens directly in the normal image viewer without a separate instruction
-popup. Each transfer uses a new image file, so an earlier image cannot be reused
-by the viewer for a different transfer. Close the QR image after scanning.
-Images fit within 660 pixels for a 720-pixel-high screen, with whole pixels per
-QR square and the standard white border. The viewer still controls window size.
+The QR opens in a fullscreen image window without a separate instruction popup.
+Press **Escape** or **Alt+F4** after scanning to return to the menu.
+Images fit within 720 pixels, with whole pixels per QR square and the standard
+white border. The menu waits until the QR window closes.
 
 The QR tool keeps working files in `/tmp` with private permissions and removes
 them when it exits normally. Saved files are written only where you choose;
