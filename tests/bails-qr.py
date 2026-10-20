@@ -33,10 +33,17 @@ class StaticQRTests(unittest.TestCase):
         self.directory = Path(self.temporary.name)
 
     def scan(self, payload, kind="Receive PSBT"):
-        with patch.object(qr, "run", return_value=payload), \
+        gtk = MagicMock()
+        with patch.dict(sys.modules, {"gi": MagicMock(), "gi.repository": MagicMock(Gtk=gtk)}), \
+                patch.object(qr, "run", return_value=payload), \
                 patch.object(qr, "save") as save, patch.object(qr, "dialog"), \
                 patch.object(qr, "rpc", return_value={}):
             qr.scan(kind)
+            if kind == "Receive PSBT":
+                save.assert_not_called()
+                clipboard = gtk.Clipboard.get.return_value
+                clipboard.store.assert_called_once()
+                return base64.b64decode(clipboard.set_text.call_args.args[0])
             return save.call_args.args
 
     def show(self, payload, original, name):
@@ -53,7 +60,7 @@ class StaticQRTests(unittest.TestCase):
     def test_psbt_formats_and_binary_newline(self):
         for payload in (PSBT, base64.b64encode(PSBT), gzip.compress(PSBT), PSBT + b"\n"):
             expected = PSBT + b"\n" if payload == PSBT + b"\n" else PSBT
-            self.assertEqual(self.scan(payload), (expected, "received.psbt"))
+            self.assertEqual(self.scan(payload), expected)
 
     def test_compressed_wallet_image_roundtrip(self):
         wallet = self.directory / "fixture.dat"
@@ -74,7 +81,7 @@ class StaticQRTests(unittest.TestCase):
         image = self.show(encoded, PSBT, "transaction.psbt")
         result = zxingcpp.read_barcode(Image.open(image))
         self.assertEqual(result.bytes, encoded)
-        self.assertEqual(self.scan(result.bytes), (PSBT, "received.psbt"))
+        self.assertEqual(self.scan(result.bytes), PSBT)
 
     def test_size_limits_and_file_fallback(self):
         with patch.dict(sys.modules, {"gi": MagicMock(), "gi.repository": MagicMock()}), \

@@ -123,8 +123,16 @@ def scan(kind):
     elif kind == "Receive PSBT":
         if not data.startswith((b"psbt\xff", b"cHNidP")):
             raise ValueError("Expected a PSBT QR. Use Verify Receiving Address for receive addresses.")
-        save(psbt_bytes(data), "received.psbt")
-        dialog("--info", "--text=In Bitcoin Core, choose File > Load PSBT from file to review the saved transaction.")
+        import gi
+        gi.require_version("Gtk", "3.0")
+        from gi.repository import Gdk, Gtk
+        clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+        clipboard.set_text(base64.b64encode(psbt_bytes(data)).decode("ascii"), -1)
+        clipboard.store()
+        notice = Gtk.MessageDialog(message_type=Gtk.MessageType.INFO, buttons=Gtk.ButtonsType.CLOSE,
+                                   text="PSBT copied to the clipboard. In Bitcoin Core, select your wallet, then choose File > Load PSBT from clipboard. Close this message after loading it.")
+        notice.run()
+        notice.destroy()
     else:
         address = data.decode("ascii", errors="replace").strip()
         if address.lower().startswith("bitcoin:"):

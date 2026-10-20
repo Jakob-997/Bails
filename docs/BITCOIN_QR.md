@@ -47,9 +47,11 @@ they are forwarded to `bitcoin-cli`.
    The static QR contains its Base64 representation, which Sparrow can scan.
    Both binary and Base64 PSBT files are accepted.
 
-3. On the other computer, choose **Receive PSBT** and save the PSBT.
+3. On the other computer, choose **Receive PSBT**. Core checks that the transaction
+   decodes, then the tool copies its Base64 text to the clipboard.
+   Leave the confirmation message open until Core has loaded it.
 
-4. In Core, choose **File** > **Load PSBT from file**. Review the transaction
+4. In Core, select your wallet, then choose **File** > **Load PSBT from clipboard**. Review the transaction
    before signing or broadcasting. The QR tool does neither.
 
 Scanning also accepts the gzip-compressed PSBT format in the manual
