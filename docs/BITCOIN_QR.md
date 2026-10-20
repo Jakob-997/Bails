@@ -13,8 +13,7 @@ and Tails' GTK 3 Python bindings for the clipboard,
 Python 3, and Tails' `python3-qrcode` library and `python3-qr` command. It uses the
 library's default PNG renderer without selecting PIL or another image factory.
 It installs nothing.
-Run `bails-qr --check` to check the local dependencies. Wallet export also
-requires Core's `exportwatchonlywallet` RPC (Core 32 or later).
+Wallet export requires Core's `exportwatchonlywallet` RPC (Core 32 or later).
 Options such as `-regtest` and `-datadir=/path` can be passed to `bails-qr`;
 they are forwarded to `bitcoin-cli`.
 

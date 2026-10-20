@@ -140,11 +140,6 @@ def main():
     for command in ("zenity", "bitcoin-cli", "zbarcam", "python3-qr", "xdg-open"):
         if not shutil.which(command):
             raise ValueError(f"Missing {command}. See docs/BITCOIN_QR.md for requirements.")
-    if CORE_ARGS == ["--check"]:
-        if not run("python3-qr", "--error-correction=L", input=b"QR transfer").startswith(b"\x89PNG\r\n\x1a\n"):
-            raise ValueError("python3-qr did not produce a PNG image.")
-        print("QR dependencies available.")
-        return
     with tempfile.TemporaryDirectory(prefix="bails-qr-", dir="/tmp") as directory:
         while True:
             action = dialog("--list", "--column=Action", "Verify Receiving Address", "Receive PSBT", "Send PSBT", "Wallet Tools")
@@ -183,6 +178,6 @@ if __name__ == "__main__":
         pass
     except (ImportError, OSError, ValueError, subprocess.SubprocessError) as error:
         print(f"QR transfer: {error}", file=sys.stderr)
-        if CORE_ARGS != ["--check"] and shutil.which("zenity"):
+        if shutil.which("zenity"):
             subprocess.run(["zenity", "--error", "--no-markup", "--title=QR transfer", f"--text={error}"], check=False)
         sys.exit(1)
