@@ -76,6 +76,13 @@ message, create a wallet with the same name again and close it.
 
 ## Move the watch-only wallet to your CipherStick
 
+For dialogs instead of console commands, open **CipherStick** > **QR transfer**.
+See [Static QR transfer](BITCOIN_QR.md) for watch-only wallet and PSBT transfer,
+receive-address checks, and the USB or microSD fallback.
+The QR tool creates the watch-only wallet automatically. The manual commands
+below send a different wallet file format: scan those wallet QRs using the
+commands below, not the QR tool's **Import Watch-Only Wallet** option.
+
 On the CryoStick:
 
 1. In Bitcoin Core, choose **File** > **Export watch-only wallet** and save
@@ -121,15 +128,3 @@ zbarcam --raw -Sbinary --oneshot | gunzip > FILE
    **Load PSBT from file** and click **Broadcast Tx**.
 
 A one-input payment is about 500 bytes, so its QR code is small.
-
-## Testing without two computers
-
-`tests/cryostick-qr-roundtrip.sh` runs the whole flow on one computer:
-both sticks' wallets on one regtest node, and every crossing through a
-real QR image read back with `zbarimg` instead of a webcam. Only the
-camera itself needs two real computers.
-
-## Still to do
-
-Tracked in #312: the receive-address check, and scripting the
-crossings so users don't type commands.
