@@ -29,9 +29,9 @@ def run(*args, **kwargs):
     return subprocess.run(args, capture_output=True, check=True, **kwargs).stdout
 
 
-def dialog(*args):
+def dialog(*args, **kwargs):
     try:
-        return run("zenity", "--title=Bitcoin QR", "--no-markup", *args).decode().rstrip("\n")
+        return run("zenity", "--title=Bitcoin QR", "--no-markup", *args, **kwargs).decode().rstrip("\n")
     except subprocess.CalledProcessError as error:
         if error.returncode == 1:
             raise Cancelled() from error
@@ -85,14 +85,26 @@ def show(data, name, directory):
         code.make(fit=True)
         code.box_size = max(1, 650 // (code.modules_count + 8))
         code.make_image().save(image, format="PNG")
-    Timer(0.5, run, args=("xdg-open", image.name)).start()
+    from gi.repository import Gio
+    viewer = Gio.AppInfo.get_default_for_type("image/png", False)
+    command = ("xdg-open",)
+    try:
+        if viewer and b"--fullscreen" in run(viewer.get_executable(), "--help", timeout=2).split():
+            command = (viewer.get_executable(), "--fullscreen")
+    except (OSError, subprocess.SubprocessError):
+        pass  # Fullscreen is optional; preserve the default viewer if unsupported.
+    Timer(0.5, run, args=(*command, image.name)).start()
 
 
-def receive_psbt(encoded):
+def clipboard():
     import gi
     gi.require_versions({"Gtk": "3.0", "Gdk": "3.0"})
     from gi.repository import Gdk, Gtk
-    clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+    return Gtk, Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+
+
+def receive_psbt(encoded):
+    Gtk, board = clipboard()
     with tempfile.TemporaryFile(dir="/tmp") as source:
         source.write(encoded)
         while True:
@@ -107,7 +119,7 @@ def receive_psbt(encoded):
                     if notice.returncode not in (0, 1):
                         raise ValueError(error.decode(errors="replace"))
                     return
-                clipboard.set_text(encoded.decode("ascii"), -1)
+                board.set_text(encoded.decode("ascii"), -1)
 
 
 def scan():
@@ -204,7 +216,10 @@ def main():
                 if action == "Scan QR":
                     scan()
                 elif action == "Send PSBT":
-                    data = psbt_bytes(dialog("--text-info", "--editable", "--filename=/dev/null", "--width=800", "--height=400", "--title=Send PSBT\n\nIn Bitcoin Core, choose Create Unsigned, then Copy to Clipboard.\nPaste the text below and select Show QR.", "--ok-label=Show QR").encode("ascii"))
+                    _, board = clipboard()
+                    copied = board.wait_for_text() or ""
+                    initial = copied if copied.lstrip().startswith("cHNidP") and len(copied) <= 2 * MAX_FILE else ""
+                    data = psbt_bytes(dialog("--text-info", "--editable", "--width=800", "--height=400", "--title=Send PSBT: Create Unsigned > Copy to Clipboard in Core; review or paste below", "--ok-label=Show QR", input=initial.encode("utf-8")).encode("ascii"))
                     show(data, "transaction.psbt", directory)
                 elif action == "Export Watch-Only Wallet":
                     export = rpc("listdescriptors", "false", wallet=wallet_name())

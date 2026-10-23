@@ -5,7 +5,8 @@ online CipherStick and offline CryoStick, and set up a watch-only wallet.
 With Bitcoin Core open on both computers, choose **CipherStick** > **Bitcoin QR**.
 
 Keep the QR image open until the other computer scans it. QR codes work in any
-orientation. If needed, maximize the image window. Close the camera window to
+orientation. The viewer opens fullscreen when it supports that option; otherwise
+maximize its window if needed. Close the camera window to
 cancel a scan; it also stops after three minutes.
 
 ## Set up your watch-only wallet
@@ -55,7 +56,8 @@ wallets need additional verification that this tool does not perform.
    then **Copy to Clipboard**. For a transaction already open in Core, use its
    **Copy to Clipboard** button.
 
-2. Choose **Send PSBT**, paste the copied text, and click **Show QR**.
+2. Choose **Send PSBT**. Check the text filled from the clipboard, or paste it
+   if the box is empty. Click **Show QR**.
 
 3. On the CryoStick, choose **Scan QR**, scan the image, and click **Copy**.
 

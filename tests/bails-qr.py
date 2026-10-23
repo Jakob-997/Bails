@@ -34,6 +34,11 @@ SIGNING = {"descriptors": True, "private_keys_enabled": True}
 
 class StaticQRTests(unittest.TestCase):
     def setUp(self):
+        self.gio = MagicMock()
+        self.gio.AppInfo.get_default_for_type.return_value = None
+        modules = patch.dict(sys.modules, {"gi": MagicMock(), "gi.repository": MagicMock(Gio=self.gio)})
+        modules.start()
+        self.addCleanup(modules.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
@@ -73,7 +78,8 @@ class StaticQRTests(unittest.TestCase):
 
     def test_send_psbt_accepts_pasted_text_and_validates_before_display(self):
         encoded = base64.b64encode(PSBT)
-        with patch.object(qr.shutil, "which", return_value="available"), \
+        with patch.object(qr, "clipboard", return_value=(MagicMock(), MagicMock(wait_for_text=lambda: ""))), \
+                patch.object(qr.shutil, "which", return_value="available"), \
                 patch.object(qr.tempfile, "TemporaryDirectory", return_value=self.temporary), \
                 patch.object(qr, "dialog", side_effect=["↑  Send PSBT", encoded.decode(), qr.Cancelled]) as dialog, \
                 patch.object(qr, "rpc", return_value={}) as rpc, \
@@ -503,6 +509,32 @@ class StaticQRTests(unittest.TestCase):
             popen.return_value.__enter__.return_value = failed
             qr.receive_psbt(base64.b64encode(PSBT))
         gtk.Clipboard.get.return_value.set_text.assert_not_called()
+
+    def test_fullscreen_is_used_only_when_default_viewer_supports_it(self):
+        for help_text, fails in ((b"--fullscreen", False), (b"other options", False), (b"", True)):
+            self.gio.AppInfo.get_default_for_type.return_value = MagicMock(get_executable=lambda: "default-viewer")
+            def run(*args, **kwargs):
+                if args[1] == "--help":
+                    if fails:
+                        raise subprocess.CalledProcessError(1, args)
+                    return help_text
+                return b""
+            with patch.object(qr, "run", side_effect=run), patch.object(qr, "Timer") as timer:
+                qr.show(PSBT, "test.psbt", self.directory)
+            command = timer.call_args.kwargs["args"]
+            self.assertEqual(command[:-1], ("default-viewer", "--fullscreen") if not fails and help_text == b"--fullscreen" else ("xdg-open",))
+
+    def test_send_prefills_only_psbt_clipboard_text_and_still_requires_confirmation(self):
+        encoded = base64.b64encode(PSBT).decode()
+        for copied in (encoded, "private unrelated text", None, encoded + "A" * (2 * qr.MAX_FILE)):
+            with patch.object(qr, "clipboard", return_value=(MagicMock(), MagicMock(wait_for_text=lambda: copied))), \
+                    patch.object(qr.shutil, "which", return_value="available"), \
+                    patch.object(qr.tempfile, "TemporaryDirectory", return_value=self.temporary), \
+                    patch.object(qr, "dialog", side_effect=["Send PSBT", qr.Cancelled, qr.Cancelled]) as dialog, \
+                    patch.object(qr, "show") as show, self.assertRaises(qr.Cancelled):
+                qr.main()
+            self.assertEqual(dialog.call_args_list[1].kwargs["input"], encoded.encode() if copied == encoded else b"")
+            show.assert_not_called()
 
 
 if __name__ == "__main__":
