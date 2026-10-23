@@ -34,11 +34,6 @@ SIGNING = {"descriptors": True, "private_keys_enabled": True}
 
 class StaticQRTests(unittest.TestCase):
     def setUp(self):
-        self.gio = MagicMock()
-        self.gio.AppInfo.get_default_for_type.return_value = None
-        modules = patch.dict(sys.modules, {"gi": MagicMock(), "gi.repository": MagicMock(Gio=self.gio)})
-        modules.start()
-        self.addCleanup(modules.stop)
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
@@ -51,22 +46,19 @@ class StaticQRTests(unittest.TestCase):
             return base64.b64decode(receive.call_args.args[0])
 
     def show(self, data, name):
-        with patch.object(qr, "run") as run, patch.object(qr, "dialog") as dialog, patch.object(qr, "Timer") as timer:
+        with patch.object(qr, "open_image") as opened, patch.object(qr, "dialog") as dialog, patch.object(qr, "Timer") as timer:
             qr.show(data, name, self.directory)
             dialog.assert_not_called()
             timer.return_value.start.assert_called_once()
             timer.call_args.args[1](*timer.call_args.kwargs["args"])
-            self.assertEqual(run.call_args.args[0], "xdg-open")
-            return Path(run.call_args.args[1])
+            return Path(opened.call_args.args[0])
 
     def test_viewer_launch_is_delayed_without_blocking_menu(self):
         opened = Event()
-        def command(*args, **kwargs):
-            if args[0] == "xdg-open":
-                self.assertTrue(Path(args[1]).is_file())
-                opened.set()
-            return b"png"
-        with patch.object(qr, "run", side_effect=command):
+        def launch(filename):
+            self.assertTrue(Path(filename).is_file())
+            opened.set()
+        with patch.object(qr, "open_image", side_effect=launch):
             qr.show(b"psbt\xff", "transaction.psbt", self.directory)
             self.assertFalse(opened.wait(0.1))
             self.assertTrue(opened.wait(3))
@@ -510,19 +502,18 @@ class StaticQRTests(unittest.TestCase):
             qr.receive_psbt(base64.b64encode(PSBT))
         gtk.Clipboard.get.return_value.set_text.assert_not_called()
 
-    def test_fullscreen_is_used_only_when_default_viewer_supports_it(self):
-        for help_text, fails in ((b"--fullscreen", False), (b"other options", False), (b"", True)):
-            self.gio.AppInfo.get_default_for_type.return_value = MagicMock(get_executable=lambda: "default-viewer")
-            def run(*args, **kwargs):
-                if args[1] == "--help":
-                    if fails:
-                        raise subprocess.CalledProcessError(1, args)
-                    return help_text
-                return b""
-            with patch.object(qr, "run", side_effect=run), patch.object(qr, "Timer") as timer:
-                qr.show(PSBT, "test.psbt", self.directory)
-            command = timer.call_args.kwargs["args"]
-            self.assertEqual(command[:-1], ("default-viewer", "--fullscreen") if not fails and help_text == b"--fullscreen" else ("xdg-open",))
+    def test_maximize_targets_only_image_title_and_waits_for_it(self):
+        for available in (True, False):
+            with patch.object(qr.subprocess, "Popen") as viewer, \
+                    patch.object(qr.shutil, "which", return_value="/usr/bin/xdotool" if available else None), \
+                    patch.object(qr, "run") as run:
+                qr.open_image("/tmp/qr.test.png")
+            viewer.assert_called_once_with(["xdg-open", "/tmp/qr.test.png"])
+            if available:
+                run.assert_called_once_with("xdotool", "search", "--sync", "--onlyvisible", "--limit", "1", "--name", r"qr\.test\.png",
+                    "windowactivate", "--sync", "key", "--window", "0", "--clearmodifiers", "super+Up", timeout=10)
+            else:
+                run.assert_not_called()
 
     def test_send_prefills_only_psbt_clipboard_text_and_still_requires_confirmation(self):
         encoded = base64.b64encode(PSBT).decode()

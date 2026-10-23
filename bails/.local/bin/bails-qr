@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from pathlib import Path
 import time
 import qrcode
 from threading import Timer
@@ -85,15 +86,14 @@ def show(data, name, directory):
         code.make(fit=True)
         code.box_size = max(1, 650 // (code.modules_count + 8))
         code.make_image().save(image, format="PNG")
-    from gi.repository import Gio
-    viewer = Gio.AppInfo.get_default_for_type("image/png", False)
-    command = ("xdg-open",)
-    try:
-        if viewer and b"--fullscreen" in run(viewer.get_executable(), "--help", timeout=2).split():
-            command = (viewer.get_executable(), "--fullscreen")
-    except (OSError, subprocess.SubprocessError):
-        pass  # Fullscreen is optional; preserve the default viewer if unsupported.
-    Timer(0.5, run, args=(*command, image.name)).start()
+    Timer(0.5, open_image, args=(image.name,)).start()
+
+
+def open_image(filename):
+    with subprocess.Popen(["xdg-open", filename]):
+        if shutil.which("xdotool"):
+            run("xdotool", "search", "--sync", "--onlyvisible", "--limit", "1", "--name", re.escape(Path(filename).name),
+                "windowactivate", "--sync", "key", "--window", "0", "--clearmodifiers", "super+Up", timeout=10)
 
 
 def clipboard():
