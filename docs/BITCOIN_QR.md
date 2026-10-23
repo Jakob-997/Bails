@@ -5,8 +5,7 @@ online CipherStick and offline CryoStick, and set up a watch-only wallet.
 With Bitcoin Core open on both computers, choose **CipherStick** > **Bitcoin QR**.
 
 Keep the QR image open until the other computer scans it. QR codes work in any
-orientation. The tool attempts to maximize the QR window using the desktop
-shortcut when xdotool is available. Close the camera window to
+orientation. Double-click the image window's title bar to maximize it if needed. Close the camera window to
 cancel a scan; it also stops after three minutes.
 
 ## Set up your watch-only wallet

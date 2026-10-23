@@ -11,7 +11,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
 import time
 import qrcode
 from threading import Timer
@@ -86,14 +85,7 @@ def show(data, name, directory):
         code.make(fit=True)
         code.box_size = max(1, 650 // (code.modules_count + 8))
         code.make_image().save(image, format="PNG")
-    Timer(0.5, open_image, args=(image.name,)).start()
-
-
-def open_image(filename):
-    with subprocess.Popen(["xdg-open", filename]):
-        if shutil.which("xdotool"):
-            run("xdotool", "search", "--sync", "--onlyvisible", "--limit", "1", "--name", re.escape(Path(filename).name),
-                "windowactivate", "--sync", "key", "--window", "0", "--clearmodifiers", "super+Up", timeout=10)
+    Timer(0.5, run, args=("xdg-open", image.name)).start()
 
 
 def clipboard():

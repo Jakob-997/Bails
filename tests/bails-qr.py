@@ -46,19 +46,21 @@ class StaticQRTests(unittest.TestCase):
             return base64.b64decode(receive.call_args.args[0])
 
     def show(self, data, name):
-        with patch.object(qr, "open_image") as opened, patch.object(qr, "dialog") as dialog, patch.object(qr, "Timer") as timer:
+        with patch.object(qr, "run") as run, patch.object(qr, "dialog") as dialog, patch.object(qr, "Timer") as timer:
             qr.show(data, name, self.directory)
             dialog.assert_not_called()
             timer.return_value.start.assert_called_once()
             timer.call_args.args[1](*timer.call_args.kwargs["args"])
-            return Path(opened.call_args.args[0])
+            self.assertEqual(run.call_args.args[0], "xdg-open")
+            return Path(run.call_args.args[1])
 
     def test_viewer_launch_is_delayed_without_blocking_menu(self):
         opened = Event()
-        def launch(filename):
-            self.assertTrue(Path(filename).is_file())
+        def launch(*args, **kwargs):
+            self.assertTrue(Path(args[1]).is_file())
             opened.set()
-        with patch.object(qr, "open_image", side_effect=launch):
+            return b""
+        with patch.object(qr, "run", side_effect=launch):
             qr.show(b"psbt\xff", "transaction.psbt", self.directory)
             self.assertFalse(opened.wait(0.1))
             self.assertTrue(opened.wait(3))
@@ -501,19 +503,6 @@ class StaticQRTests(unittest.TestCase):
             popen.return_value.__enter__.return_value = failed
             qr.receive_psbt(base64.b64encode(PSBT))
         gtk.Clipboard.get.return_value.set_text.assert_not_called()
-
-    def test_maximize_targets_only_image_title_and_waits_for_it(self):
-        for available in (True, False):
-            with patch.object(qr.subprocess, "Popen") as viewer, \
-                    patch.object(qr.shutil, "which", return_value="/usr/bin/xdotool" if available else None), \
-                    patch.object(qr, "run") as run:
-                qr.open_image("/tmp/qr.test.png")
-            viewer.assert_called_once_with(["xdg-open", "/tmp/qr.test.png"])
-            if available:
-                run.assert_called_once_with("xdotool", "search", "--sync", "--onlyvisible", "--limit", "1", "--name", r"qr\.test\.png",
-                    "windowactivate", "--sync", "key", "--window", "0", "--clearmodifiers", "super+Up", timeout=10)
-            else:
-                run.assert_not_called()
 
     def test_send_prefills_only_psbt_clipboard_text_and_still_requires_confirmation(self):
         encoded = base64.b64encode(PSBT).decode()
