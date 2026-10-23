@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=QR transfer
+Name=Bitcoin QR
 Comment=Transfer PSBTs and watch-only wallets using static QR codes
 Exec=bails-qr
 Icon=scanner

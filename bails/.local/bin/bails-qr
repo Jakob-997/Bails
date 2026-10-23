@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 # Copyright (c) 2026 Bails contributors
 # Distributed under the MIT license; see LICENSE.
-"""Static QR transfers; Bitcoin Core owns wallet export and transaction review."""
+"""Static Bitcoin QRs; Bitcoin Core owns wallet export and transaction review."""
 import base64
 import gzip
 import io
@@ -11,6 +11,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import qrcode
 from threading import Timer
 from urllib.parse import unquote, urlsplit
 import zlib
@@ -29,7 +31,7 @@ def run(*args, **kwargs):
 
 def dialog(*args):
     try:
-        return run("zenity", "--title=QR transfer", "--no-markup", *args).decode().rstrip("\n")
+        return run("zenity", "--title=Bitcoin QR", "--no-markup", *args).decode().rstrip("\n")
     except subprocess.CalledProcessError as error:
         if error.returncode == 1:
             raise Cancelled() from error
@@ -78,11 +80,37 @@ def show(data, name, directory):
         save(data, name)
         return
     with tempfile.NamedTemporaryFile(suffix=".png", dir=directory, delete=False) as image:
-        image.write(run("python3-qr", "--error-correction=L", input=payload))
+        code = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L)
+        code.add_data(payload)
+        code.make(fit=True)
+        code.box_size = max(1, 650 // (code.modules_count + 8))
+        code.make_image().save(image, format="PNG")
     Timer(0.5, run, args=("xdg-open", image.name)).start()
 
 
-def scan(kind):
+def receive_psbt(encoded):
+    import gi
+    gi.require_versions({"Gtk": "3.0", "Gdk": "3.0"})
+    from gi.repository import Gdk, Gtk
+    clipboard = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+    with tempfile.TemporaryFile(dir="/tmp") as source:
+        source.write(encoded)
+        while True:
+            source.seek(0)
+            with subprocess.Popen(["zenity", "--text-info", "--title=Receive PSBT: Copy, then File > Load PSBT from clipboard in Core", "--width=800", "--height=400", "--extra-button=Copy", "--ok-label=Close"], stdin=source, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as notice:
+                while notice.poll() is None:
+                    while Gtk.events_pending():
+                        Gtk.main_iteration_do(False)
+                    time.sleep(0.05)
+                output, error = notice.communicate()
+                if output.strip() != b"Copy":
+                    if notice.returncode not in (0, 1):
+                        raise ValueError(error.decode(errors="replace"))
+                    return
+                clipboard.set_text(encoded.decode("ascii"), -1)
+
+
+def scan():
     data = run("zbarcam", "--nodbus", "--raw", "-Sdisable", "-Sqrcode.enable",
                "-Sbinary", "--oneshot", timeout=180)
     if not data:
@@ -95,7 +123,7 @@ def scan(kind):
             data = source.read(MAX_FILE + 1)
         if len(data) > MAX_FILE:
             raise ValueError("The decompressed file exceeds 1 MiB.")
-    if kind == "Import Watch-Only Wallet":
+    if data.lstrip().startswith((b"{", b"[")):
         export = json.loads(data)
         descriptors = export.get("descriptors") if isinstance(export, dict) else None
         if not isinstance(descriptors, list) or not descriptors or any(not isinstance(d, dict) for d in descriptors) or not isinstance(export.get("wallet_name"), str):
@@ -104,6 +132,11 @@ def scan(kind):
         if not isinstance(labels, dict) or any(not isinstance(a, str) or not isinstance(label, str) for a, label in labels.items()):
             raise ValueError("Expected address labels as text.")
         name = "[Watch-only] " + (export["wallet_name"] or "default").replace("/", "_").replace("\\", "_")
+        existing = {w["name"] for w in rpc("listwalletdir")["wallets"]}
+        while name in existing:
+            name = dialog("--entry", "--text=That wallet name already exists. Choose a new name.", f"--entry-text={name}").strip()
+            if not name or "/" in name or "\\" in name:
+                raise ValueError("Choose a nonempty wallet name without slashes.")
         rpc("createwallet", name, "true", "true")
         results = rpc("importdescriptors", wallet=name, data=json.dumps(descriptors).encode() + b"\n")
         retry = {i: dict(d) for i, (d, r) in enumerate(zip(descriptors, results)) if not r["success"] and "new range must include current range" in r.get("error", {}).get("message", "")}
@@ -122,27 +155,8 @@ def scan(kind):
         for address, label in labels.items():
             rpc("setlabel", address, label, wallet=name)
         dialog("--info", f"--text=Imported:\n\n{name}\n\nSelect this wallet in Bitcoin Core.\n\nFind imported receiving addresses and their labels under Window > Receiving addresses.")
-    elif kind == "Receive PSBT":
-        if not data.startswith((b"psbt\xff", b"cHNidP")):
-            raise ValueError("Expected a PSBT QR. Use Verify Receiving Address for receive addresses.")
-        import gi
-        gi.require_versions({"Gtk": "3.0", "Gdk": "3.0"})
-        from gi.repository import Gdk, Gtk
-        text = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.CHAR)
-        buffer = text.get_buffer()
-        buffer.set_text(base64.b64encode(psbt_bytes(data)).decode("ascii"))
-        scroll = Gtk.ScrolledWindow(min_content_width=500, min_content_height=150)
-        scroll.add(text)
-        notice = Gtk.MessageDialog(message_type=Gtk.MessageType.INFO, buttons=Gtk.ButtonsType.CLOSE,
-                                   text="Receive PSBT\n\nSelect Copy. In Bitcoin Core, select your wallet,\nthen choose File > Load PSBT from clipboard.")
-        copy = Gtk.Button(label="Copy", margin_top=12, margin_bottom=6)
-        copy.connect("clicked", lambda _: (buffer.select_range(*buffer.get_bounds()), buffer.copy_clipboard(Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD))))
-        notice.get_content_area().pack_start(copy, False, False, 0)
-        notice.get_content_area().pack_start(scroll, True, True, 0)
-        notice.show_all()
-        notice.run()
-        notice.destroy()
-        Gdk.Display.get_default().flush()
+    elif data.startswith(b"psbt\xff") or data.lstrip().startswith(b"cHNidP"):
+        receive_psbt(base64.b64encode(psbt_bytes(data)))
     else:
         address = data.decode("ascii", errors="replace").strip()
         if address.lower().startswith("bitcoin:"):
@@ -154,16 +168,21 @@ def scan(kind):
         wallets = rpc("listwallets")
         if not wallets:
             raise ValueError("Open your wallet in Bitcoin Core, then scan the address again.")
-        owner = next((wallet for wallet in wallets if (info := rpc("getaddressinfo", address, wallet=wallet)).get("ismine")), None)
-        if owner is not None:
+        matches = []
+        for owner in wallets:
+            info = rpc("getaddressinfo", address, wallet=owner)
+            if not info.get("ismine"):
+                continue
             wallet = rpc("getwalletinfo", wallet=owner)
             single = wallet.get("descriptors") and re.fullmatch(r"(?:(?:pkh|wpkh|tr)\([^(),{}]+\)|sh\(wpkh\([^(),{}]+\)\))#[a-z0-9]{8}", info.get("parent_desc", ""))
-            confirmed = bool(single and wallet.get("private_keys_enabled"))
+            matches.append((bool(single and wallet.get("private_keys_enabled")), owner, wallet))
+        matches = [m for m in matches if m[0]] or matches
+        for confirmed, owner, wallet in matches:
             message = "This wallet holds the key needed to sign for this address." if confirmed else ("⚠ WARNING: You do not own the signing key for this address in this wallet.\n\nThis address was found in a watch-only wallet, which does not contain its signing key.\n\nYOU WILL NOT BE ABLE TO SPEND WITH THIS WALLET ALONE.\nDO NOT SEND FUNDS TO THIS ADDRESS UNTIL YOU VERIFY IT IN YOUR OFFLINE SIGNING WALLET.\n\nCheck again carefully. If you expected this to be your signing wallet and this is not a mistake, this computer may be compromised." if not wallet.get("private_keys_enabled") else "Multisig or another unverified spending policy. Signing is not confirmed.")
             if "unlocked_until" in wallet:
                 message = "⚠ ENCRYPTED WALLET\nEnsure you have the encryption passphrase and can unlock this wallet.\n\n" + message
             dialog("--info" if confirmed and "unlocked_until" not in wallet else "--warning", "--title=WARNING: Encrypted wallet" if "unlocked_until" in wallet else ("--title=Address confirmed" if confirmed else ("--title=WARNING: Signing key not owned" if not wallet.get("private_keys_enabled") else "--title=Signing not confirmed")), f"--text={message}\n\n{'✓ ' if confirmed else ''}Address matches wallet:\n{owner or '(default)'}\n\n{address}")
-        else:
+        if not matches:
             dialog("--warning", "--title=WARNING: Address not owned",
                    f"--text=⚠ WARNING: You do not own this address.\n\n{address}\n\n"
                    "None of your open Bitcoin Core wallets recognize this address.\n\n"
@@ -173,20 +192,17 @@ def scan(kind):
 
 
 def main():
-    for command in ("zenity", "bitcoin-cli", "zbarcam", "python3-qr", "xdg-open"):
+    for command in ("zenity", "bitcoin-cli", "zbarcam", "xdg-open"):
         if not shutil.which(command):
             raise ValueError(f"Missing {command}. See docs/BITCOIN_QR.md for requirements.")
     with tempfile.TemporaryDirectory(prefix="bails-qr-", dir="/tmp") as directory:
         while True:
-            action = dialog("--list", "--width=640", "--height=520", "--text=Choose an action.\n\nScanning tips: try maximizing the window showing the QR code.\nQR codes can be scanned sideways or upside down.", "--column=Action", "✓  Verify Receiving Address", "↓  Receive PSBT", "↑  Send PSBT", "⚙  Wallet Tools").split("  ", 1)[-1]
+            action = dialog("--list", "--width=640", "--height=420", "--text=Scan an address, PSBT, or watch-only wallet.\n\nQR codes work in any orientation.", "--column=Action", "↓  Scan QR", "↑  Send PSBT", "↑  Export Watch-Only Wallet").split("  ", 1)[-1]
             if not action:
                 return
             try:
-                if action == "Wallet Tools":
-                    action = dialog("--list", "--title=Wallet Tools", "--text=Transfer public descriptors and address labels.", "--column=Action",
-                                    "↑  Export Watch-Only Wallet", "↓  Import Watch-Only Wallet").split("  ", 1)[-1]
-                if action in ("Verify Receiving Address", "Receive PSBT", "Import Watch-Only Wallet"):
-                    scan(action)
+                if action == "Scan QR":
+                    scan()
                 elif action == "Send PSBT":
                     data = psbt_bytes(dialog("--text-info", "--editable", "--filename=/dev/null", "--width=800", "--height=400", "--title=Send PSBT\n\nIn Bitcoin Core, choose Create Unsigned, then Copy to Clipboard.\nPaste the text below and select Show QR.", "--ok-label=Show QR").encode("ascii"))
                     show(data, "transaction.psbt", directory)
@@ -213,7 +229,7 @@ if __name__ == "__main__":
     except Cancelled:
         pass
     except (ImportError, OSError, ValueError, subprocess.SubprocessError) as error:
-        print(f"QR transfer: {error}", file=sys.stderr)
+        print(f"Bitcoin QR: {error}", file=sys.stderr)
         if shutil.which("zenity"):
-            subprocess.run(["zenity", "--error", "--no-markup", "--title=QR transfer", f"--text={error}"], check=False)
+            subprocess.run(["zenity", "--error", "--no-markup", "--title=Bitcoin QR", f"--text={error}"], check=False)
         sys.exit(1)
