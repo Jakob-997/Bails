@@ -11,7 +11,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import qrcode
 from threading import Timer
 from urllib.parse import unquote, urlsplit
@@ -97,21 +96,26 @@ def clipboard():
 
 def receive_psbt(encoded):
     Gtk, board = clipboard()
-    with tempfile.TemporaryFile(dir="/tmp") as source:
-        source.write(encoded)
-        while True:
-            source.seek(0)
-            with subprocess.Popen(["zenity", "--text-info", "--title=Receive PSBT: Copy, then File > Load PSBT from clipboard in Core", "--width=800", "--height=400", "--extra-button=Copy", "--ok-label=Close"], stdin=source, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as notice:
-                while notice.poll() is None:
-                    while Gtk.events_pending():
-                        Gtk.main_iteration_do(False)
-                    time.sleep(0.05)
-                output, error = notice.communicate()
-                if output.strip() != b"Copy":
-                    if notice.returncode not in (0, 1):
-                        raise ValueError(error.decode(errors="replace"))
-                    return
-                board.set_text(encoded.decode("ascii"), -1)
+    notice = Gtk.MessageDialog(title="Receive PSBT", message_type=Gtk.MessageType.INFO,
+                               text="Select Copy. In Bitcoin Core, select your wallet,\nthen choose File > Load PSBT from clipboard.")
+    notice.add_buttons("Go Back", Gtk.ResponseType.CANCEL, "Copy", Gtk.ResponseType.OK)
+    notice.get_widget_for_response(Gtk.ResponseType.OK).get_style_context().add_class("suggested-action")
+    text = Gtk.TextView(editable=False, wrap_mode=Gtk.WrapMode.CHAR)
+    buffer = text.get_buffer()
+    buffer.set_text(encoded.decode("ascii"))
+    scroll = Gtk.ScrolledWindow(min_content_width=600, min_content_height=200)
+    scroll.add(text)
+    notice.get_content_area().pack_start(scroll, True, True, 0)
+    notice.show_all()
+    text.grab_focus()
+    buffer.select_range(*buffer.get_bounds())
+    try:
+        while notice.run() == Gtk.ResponseType.OK:
+            board.set_text(encoded.decode("ascii"), -1)
+    finally:
+        display = notice.get_display()
+        notice.destroy()
+        display.flush()
 
 
 def scan():

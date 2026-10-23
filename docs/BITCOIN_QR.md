@@ -58,10 +58,12 @@ wallets need additional verification that this tool does not perform.
 2. Choose **Send PSBT**. Check the text filled from the clipboard, or paste it
    if the box is empty. Click **Show QR**.
 
-3. On the CryoStick, choose **Scan QR**, scan the image, and click **Copy**.
+3. On the CryoStick, choose **Scan QR** and scan the image. All the text starts
+   selected. Click the highlighted **Copy** button.
 
 4. In Core, select your signing wallet and choose **File** > **Load PSBT from clipboard**.
-   Keep the text window open until Core has loaded the transaction, then close it.
+   Keep the text window open until Core has loaded the transaction, then choose
+   **Go Back**.
    Check the recipient, amount, change, and fee before choosing **Sign Tx**.
 
 5. Copy the signed transaction from Core and repeat the transfer in the other

@@ -456,33 +456,26 @@ class StaticQRTests(unittest.TestCase):
                 qr.scan()
             self.assertEqual(rpc.call_count, 1)
 
-    def test_zenity_copy_button_keeps_exact_psbt_and_close_does_not_copy(self):
-        for click in (False, True):
-            gtk, gdk = MagicMock(), MagicMock()
-            gtk.events_pending.return_value = False
-            copied = MagicMock(returncode=1)
-            copied.poll.return_value = 1
-            copied.communicate.return_value = (b"Copy\n", b"")
-            closed = MagicMock(returncode=0)
-            closed.poll.side_effect = [None, 0]
-            closed.communicate.return_value = (b"", b"")
-            instances = [copied, closed] if click else [closed]
-            processes = [MagicMock() for _ in instances]
-            for manager, process in zip(processes, instances):
-                manager.__enter__.return_value = process
-            def launch(*args, **kwargs):
-                self.assertEqual(kwargs["stdin"].read(), base64.b64encode(PSBT))
-                self.assertIn("--extra-button=Copy", args[0])
-                return processes.pop(0)
-            with patch.dict(sys.modules, {"gi": MagicMock(), "gi.repository": MagicMock(Gtk=gtk, Gdk=gdk)}), \
-                    patch.object(qr.subprocess, "Popen", side_effect=launch), \
-                    patch.object(qr.time, "sleep"), patch.object(qr.tempfile, "TemporaryFile", side_effect=lambda **kw: __import__("io").BytesIO()):
+    def test_receive_selects_all_and_has_only_back_and_primary_copy(self):
+        for copy in (False, True):
+            gtk, board = MagicMock(), MagicMock()
+            notice = gtk.MessageDialog.return_value
+            notice.run.side_effect = [gtk.ResponseType.OK, gtk.ResponseType.CANCEL] if copy else [gtk.ResponseType.CANCEL]
+            buffer = gtk.TextView.return_value.get_buffer.return_value
+            buffer.get_bounds.return_value = ("start", "end")
+            with patch.object(qr, "clipboard", return_value=(gtk, board)):
                 qr.receive_psbt(base64.b64encode(PSBT))
-            if click:
-                gtk.Clipboard.get.return_value.set_text.assert_called_once_with(base64.b64encode(PSBT).decode(), -1)
+            notice.add_buttons.assert_called_once_with("Go Back", gtk.ResponseType.CANCEL, "Copy", gtk.ResponseType.OK)
+            notice.get_widget_for_response.return_value.get_style_context.return_value.add_class.assert_called_once_with("suggested-action")
+            buffer.select_range.assert_called_once_with("start", "end")
+            gtk.TextView.return_value.grab_focus.assert_called_once()
+            self.assertEqual(base64.b64decode(buffer.set_text.call_args.args[0]), PSBT)
+            if copy:
+                board.set_text.assert_called_once_with(base64.b64encode(PSBT).decode(), -1)
             else:
-                gtk.Clipboard.get.return_value.set_text.assert_not_called()
-            self.assertTrue(gtk.events_pending.called)
+                board.set_text.assert_not_called()
+            notice.destroy.assert_called_once()
+            notice.get_display.return_value.flush.assert_called_once()
 
     def test_qr_fits_720_pixel_screen_without_blurred_modules(self):
         for size in (50, 500, 1500, 2953):
@@ -491,18 +484,15 @@ class StaticQRTests(unittest.TestCase):
             self.assertGreater(image.height, 450)
             self.assertEqual(set(image.convert("L").tobytes()), {0, 255})
 
-    def test_zenity_failure_is_visible_and_does_not_copy(self):
-        gtk, gdk = MagicMock(), MagicMock()
-        failed = MagicMock(returncode=2)
-        failed.poll.return_value = 2
-        failed.communicate.return_value = (b"", b"display unavailable")
-        with patch.dict(sys.modules, {"gi": MagicMock(), "gi.repository": MagicMock(Gtk=gtk, Gdk=gdk)}), \
-                patch.object(qr.subprocess, "Popen") as popen, \
-                patch.object(qr.tempfile, "TemporaryFile", side_effect=lambda **kw: __import__("io").BytesIO()), \
-                self.assertRaisesRegex(ValueError, "display unavailable"):
-            popen.return_value.__enter__.return_value = failed
+    def test_receive_error_still_closes_window(self):
+        gtk, board = MagicMock(), MagicMock()
+        notice = gtk.MessageDialog.return_value
+        notice.run.side_effect = RuntimeError("display unavailable")
+        with patch.object(qr, "clipboard", return_value=(gtk, board)), self.assertRaisesRegex(RuntimeError, "display unavailable"):
             qr.receive_psbt(base64.b64encode(PSBT))
-        gtk.Clipboard.get.return_value.set_text.assert_not_called()
+        notice.destroy.assert_called_once()
+        notice.get_display.return_value.flush.assert_called_once()
+        board.set_text.assert_not_called()
 
     def test_send_prefills_only_psbt_clipboard_text_and_still_requires_confirmation(self):
         encoded = base64.b64encode(PSBT).decode()
