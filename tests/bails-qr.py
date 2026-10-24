@@ -477,10 +477,10 @@ class StaticQRTests(unittest.TestCase):
             notice.destroy.assert_called_once()
             notice.get_display.return_value.flush.assert_called_once()
 
-    def test_qr_fits_720_pixel_screen_without_blurred_modules(self):
+    def test_qr_fits_1366_by_768_display_without_blurred_modules(self):
         for size in (50, 500, 1500, 2953):
             image = Image.open(self.show(random.Random(size).randbytes(size), "test.dat"))
-            self.assertLessEqual(image.height, 650)
+            self.assertLessEqual(image.height, 688)
             self.assertGreater(image.height, 450)
             self.assertEqual(set(image.convert("L").tobytes()), {0, 255})
 

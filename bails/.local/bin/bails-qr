@@ -82,7 +82,7 @@ def show(data, name, directory):
         code = qrcode.QRCode(error_correction=qrcode.constants.ERROR_CORRECT_L)
         code.add_data(payload)
         code.make(fit=True)
-        code.box_size = max(1, 650 // (code.modules_count + 8))
+        code.box_size = max(1, (768 - 80) // (code.modules_count + 8))
         code.make_image().save(image, format="PNG")
     Timer(0.5, run, args=("xdg-open", image.name)).start()
 
