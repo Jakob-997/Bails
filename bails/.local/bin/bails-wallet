@@ -64,7 +64,7 @@ def rpc(datadir, method, *, wallet=None, chain=None, port=None, args=(), stdin=N
     cli = shutil.which("bitcoin-cli")
     if not cli:
         raise SetupError("Bitcoin Core's bitcoin-cli was not found.")
-    command = [cli, f"-datadir={datadir}"]
+    command = [cli, f"-datadir={datadir}", "-rpcconnect=127.0.0.1"]
     if chain:
         command.append(f"-chain={chain}")
     if port:
@@ -154,9 +154,9 @@ def b58encode(raw):
 
 
 def normalize_signer_key(line):
-    match = re.fullmatch(r"(\[[^]]+\])?([1-9A-HJ-NP-Za-km-z]+)", line.strip())
+    match = re.fullmatch(r"(\[[^]]+\])([1-9A-HJ-NP-Za-km-z]+)", line.strip())
     if not match:
-        raise ValueError("Enter one account xpub per line, optionally prefixed by [fingerprint/path].")
+        raise ValueError("Enter one account xpub per line as [fingerprint/derivation/path]xpub.")
     origin, key = match.groups()
     if origin:
         body = origin[1:-1]
