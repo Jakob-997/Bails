@@ -5,7 +5,11 @@ set -euo pipefail
 
 readonly REPOSITORY="https://github.com/trezor/python-mnemonic.git"
 readonly REVISION="b57a5ad77a981e743f4167ab2f7927a55c1e82a8"
-readonly DATA_HOME="${XDG_DATA_HOME:-/live/persistence/TailsData_unlocked/dotfiles/.local/share}"
+DATA_HOME="${XDG_DATA_HOME:-/live/persistence/TailsData_unlocked/dotfiles/.local/share}"
+if [ ! -d /live/persistence/TailsData_unlocked ] && [ -z "${XDG_DATA_HOME:-}" ]; then
+    DATA_HOME="$HOME/.local/share"
+fi
+readonly DATA_HOME
 readonly SOURCE_DIR="$DATA_HOME/python-mnemonic"
 
 usable() {
