@@ -158,11 +158,10 @@ def normalize_signer_key(line):
     if not match:
         raise ValueError("Enter one account xpub per line as [fingerprint/derivation/path]xpub.")
     origin, key = match.groups()
-    if origin:
-        body = origin[1:-1]
-        if not re.fullmatch(r"[0-9a-fA-F]{8}(?:/[0-9]+(?:h|H|')?)*", body):
-            raise ValueError("A signer origin must be [8-hex-digit-fingerprint/derivation/path].")
-        origin = "[" + re.sub(r"(?<=\d)[hH](?=/|$)", "'", body) + "]"
+    body = origin[1:-1]
+    if not re.fullmatch(r"[0-9a-fA-F]{8}(?:/[0-9]+(?:h|H|')?)+", body):
+        raise ValueError("A signer origin must include a fingerprint and derivation path.")
+    origin = "[" + re.sub(r"(?<=\d)[hH](?=/|$)", "'", body) + "]"
     raw = b58decode(key)
     version = raw[:4]
     if version in ZPUB_VERSIONS:
