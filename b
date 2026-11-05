@@ -110,6 +110,14 @@ else
         exit 1
       fi
     fi
+    # Install the pinned BIP39 dependency before CryoStick can be enabled.
+    if [ ! -e "$DOTFILES/.local/state/cryostick" ] &&
+      ! "$DOTFILES/.local/bin/install-mnemonic"; then
+      zenity --error --title='BIP39 library setup failed' \
+        --text='The pinned Trezor BIP39 library could not be installed. Resolve the error before using wallet setup.' \
+        "$ICON"
+      exit 1
+    fi
     # Display info about IBD, keeping Tails private and extra reading material
     zenity --info --title='Setup almost complete' --icon-name=bails128 "$ICON" --text='Bitcoin Core has begun syncing the block chain automatically.\nMake sure no one messes with the PC.\n\nTo lock the screen for privacy, press ❖+L (⊞+L or ⌘+L)\n\nIt is safer to exit Bitcoin Core (Ctrl+Q), <a href="file:///usr/share/doc/tails/website/doc/first_steps/shutdown.en.html">shutdown Tails</a> and take your CipherStick USB stick with you or store it in a safe place than leave Tails running unattended where people you distrust could tamper with it.\n\nIf you want to learn more about using Tails safely read the <a href="file:///usr/share/doc/tails/website/doc.en.html">documentation</a>.\n\nAnother excellent read to improve your physical and digital security tactics is the <a href="'"$SECURITY_IN_A_BOX_TOR_URL"'">security in-a-box</a> website.'
     zenity --info --title="CipherStick install successful" --text="CipherStick $FULL_VERSION has been installed." "$ICON" --icon-name=bails128

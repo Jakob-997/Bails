@@ -1,0 +1,452 @@
+#!/usr/bin/python3
+# Copyright (c) 2026 Bails contributors
+# Distributed under the MIT license; see LICENSE.
+"""Create or restore a BIP39-backed Bitcoin Core descriptor wallet."""
+
+import hashlib
+import json
+import os
+import re
+import secrets
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+DATA_DIR = Path("/live/persistence/TailsData_unlocked/Persistent/.bitcoin")
+CRYOSTICK_MARKER = Path("/live/persistence/TailsData_unlocked/dotfiles/.local/state/cryostick")
+DATA_HOME = Path(os.environ.get("XDG_DATA_HOME", "/live/persistence/TailsData_unlocked/dotfiles/.local/share"))
+sys.path.insert(0, str(DATA_HOME / "python-mnemonic" / "src"))
+sys.path.insert(0, str(DATA_HOME / "python-codex32" / "src"))
+
+try:
+    from mnemonic import Mnemonic
+    from codex32.profiles.ms32 import MasterSeed
+    from codex32.wallet import master_xprv
+except ImportError:
+    raise SystemExit("BIP39 support is not installed. Start CipherStick online and run its update first.")
+
+ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+ZPUB_VERSIONS = {bytes.fromhex("02aa7ed3"), bytes.fromhex("04b24746")}
+XPUB_VERSION = bytes.fromhex("0488b21e")
+ENTROPY_BYTES = {12: 16, 15: 20, 18: 24, 21: 28, 24: 32}
+
+
+class Cancelled(Exception):
+    pass
+
+
+class SetupError(Exception):
+    pass
+
+
+def dialog(*args, input_text=None):
+    result = subprocess.run(["zenity", "--no-markup", *args], input=input_text,
+                            text=True, capture_output=True, check=False)
+    if result.returncode:
+        raise Cancelled
+    return result.stdout.strip()
+
+
+def show_text(title, text, label="Continue"):
+    dialog("--text-info", f"--title={title}", "--filename=/dev/stdin", "--width=760",
+           "--height=560", f"--ok-label={label}", input_text=text)
+
+
+def choose(title, options):
+    return dialog("--list", f"--title={title}", "--column=Choice", *options)
+
+
+def rpc(datadir, method, *, wallet=None, chain=None, port=None, args=(), stdin=None, named=None, timeout=20):
+    cli = shutil.which("bitcoin-cli")
+    if not cli:
+        raise SetupError("Bitcoin Core's bitcoin-cli was not found.")
+    command = [cli, f"-datadir={datadir}"]
+    if chain:
+        command.append(f"-chain={chain}")
+    if port:
+        command.append(f"-rpcport={port}")
+    if wallet:
+        command.append(f"-rpcwallet={wallet}")
+    if stdin is not None:
+        command.append("-stdin")
+    if named is not None:
+        command.append("-named")
+    command.append(method)
+    command.extend(f"{key}={value}" for key, value in (named or {}).items())
+    command.extend(str(value) for value in args)
+    payload = "" if stdin is None else "".join(json.dumps(value) + "\n" for value in stdin)
+    result = subprocess.run(command, input=payload, text=True, capture_output=True,
+                            check=False, timeout=timeout)
+    if result.returncode:
+        raise SetupError(f"Bitcoin Core rejected {method}.")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise SetupError(f"Bitcoin Core returned an invalid response to {method}.") from error
+
+
+def start_private_core(directory, port, wallet=None):
+    bitcoind = shutil.which("bitcoind")
+    if not bitcoind:
+        raise SetupError("Bitcoin Core's bitcoind was not found.")
+    command = [bitcoind, f"-datadir={directory}", "-chain=main", f"-rpcport={port}",
+               "-daemon=0", "-server=1", "-networkactive=0", "-listen=0", "-connect=0",
+               "-dnsseed=0", "-discover=0", "-upnp=0", "-natpmp=0"]
+    if wallet:
+        command.append(f"-wallet={wallet}")
+    process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise SetupError("The temporary offline Bitcoin Core process did not start.")
+        try:
+            info = rpc(directory, "getnetworkinfo", chain="main", port=port, timeout=2)
+        except SetupError:
+            time.sleep(0.25)
+            continue
+        if info.get("networkactive") is not False or info.get("connections") != 0:
+            process.terminate()
+            process.wait(timeout=5)
+            raise SetupError("The temporary Bitcoin Core process did not stay offline.")
+        return process
+    process.terminate()
+    process.wait(timeout=5)
+    raise SetupError("The temporary offline Bitcoin Core process timed out.")
+
+
+def stop_private_core(process, directory, port):
+    if process.poll() is None:
+        try:
+            rpc(directory, "stop", chain="main", port=port, timeout=5)
+            process.wait(timeout=20)
+        except (SetupError, subprocess.TimeoutExpired):
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+
+
+def b58decode(text):
+    number = 0
+    for character in text:
+        number = number * 58 + ALPHABET.index(character)
+    body = number.to_bytes((number.bit_length() + 7) // 8, "big") if number else b""
+    raw = b"\0" * (len(text) - len(text.lstrip("1"))) + body
+    if len(raw) != 82 or hashlib.sha256(hashlib.sha256(raw[:-4]).digest()).digest()[:4] != raw[-4:]:
+        raise ValueError("Invalid extended-key checksum.")
+    return raw
+
+
+def b58encode(raw):
+    number = int.from_bytes(raw, "big")
+    encoded = ""
+    while number:
+        number, digit = divmod(number, 58)
+        encoded = ALPHABET[digit] + encoded
+    return "1" * (len(raw) - len(raw.lstrip(b"\0"))) + encoded
+
+
+def normalize_signer_key(line):
+    match = re.fullmatch(r"(\[[^]]+\])?([1-9A-HJ-NP-Za-km-z]+)", line.strip())
+    if not match:
+        raise ValueError("Enter one account xpub per line, optionally prefixed by [fingerprint/path].")
+    origin, key = match.groups()
+    if origin:
+        body = origin[1:-1]
+        if not re.fullmatch(r"[0-9a-fA-F]{8}(?:/[0-9]+(?:h|H|')?)*", body):
+            raise ValueError("A signer origin must be [8-hex-digit-fingerprint/derivation/path].")
+        origin = "[" + re.sub(r"(?<=\d)[hH](?=/|$)", "'", body) + "]"
+    raw = b58decode(key)
+    version = raw[:4]
+    if version in ZPUB_VERSIONS:
+        payload = XPUB_VERSION + raw[4:-4]
+        checksum = hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]
+        key = b58encode(payload + checksum)
+    elif version != XPUB_VERSION:
+        raise ValueError("Use a mainnet xpub or Zpub.")
+    return f"{origin or ''}{key}", key
+
+
+def entropy_sources():
+    findmnt = shutil.which("findmnt")
+    if not findmnt or shutil.which("bitcoind") is None:
+        raise SetupError("Bitcoin Core and findmnt are required for RAM-only entropy generation.")
+    with tempfile.TemporaryDirectory(prefix="bails-bip39-") as temporary:
+        directory = Path(temporary)
+        fs = subprocess.run([findmnt, "-n", "-o", "FSTYPE", "--target", temporary],
+                            text=True, capture_output=True, check=False)
+        if fs.returncode or fs.stdout.strip() != "tmpfs":
+            raise SetupError("Temporary storage is not RAM-backed; refusing to create a seed.")
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+        process = start_private_core(temporary, port)
+        try:
+            rpc(temporary, "createwallet", chain="main", port=port,
+                stdin=["entropy", False, False, "", False, True, False, False])
+            stop_private_core(process, temporary, port)
+            wallet_file = directory / "wallets" / "entropy" / "wallet.dat"
+            if not wallet_file.is_file():
+                raise SetupError("Bitcoin Core did not create its temporary wallet.dat.")
+            wallet_hash = hashlib.sha256(wallet_file.read_bytes()).digest()
+            os_random = secrets.token_bytes(32)
+            return wallet_hash, os_random
+        finally:
+            stop_private_core(process, temporary, port)
+
+
+def prepare_local(seed, mode, path, m, cosigners):
+    root_xprv = master_xprv(MasterSeed.from_seed(seed, identifier="qqqq"))
+    with tempfile.TemporaryDirectory(prefix="bails-bip39-") as temporary:
+        findmnt = shutil.which("findmnt")
+        if not findmnt:
+            raise SetupError("findmnt is required to verify RAM-backed temporary storage.")
+        fs = subprocess.run([findmnt, "-n", "-o", "FSTYPE", "--target", temporary],
+                            text=True, capture_output=True, check=False)
+        if fs.returncode or fs.stdout.strip() != "tmpfs":
+            raise SetupError("Temporary storage is not RAM-backed; refusing to derive a wallet key.")
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            port = listener.getsockname()[1]
+        process = start_private_core(temporary, port)
+        try:
+            rpc(temporary, "createwallet", chain="main", port=port,
+                stdin=["derive", False, True, "", False, True, False, False])
+            root = rpc(temporary, "addhdkey", wallet="derive", chain="main", port=port,
+                       stdin=[root_xprv])
+            result = rpc(temporary, "derivehdkey", wallet="derive", chain="main", port=port,
+                         named={"path": path, "hdkey": root["xpub"], "private": "true"})
+            origin = result["origin"].strip("[]")
+            origin = re.sub(r"(?<=\d)[hH](?=/|$)", "'", origin)
+            local_key = f"[{origin}]{result['xpub']}"
+            if any(key.split("]")[-1] == result["xpub"] for key in cosigners):
+                raise SetupError("The local signer key is already listed as another multisig signer.")
+            descriptor = None
+            if mode == "Multisig":
+                keys = [local_key + "/<0;1>/*"] + [key + "/<0;1>/*" for key in cosigners]
+                descriptor = f"wsh(sortedmulti({m},{','.join(keys)}))"
+                validated = rpc(temporary, "getdescriptorinfo", chain="main", port=port,
+                                stdin=[descriptor])
+                if validated.get("hasprivatekeys") or not validated.get("isrange"):
+                    raise SetupError("Bitcoin Core did not validate a public ranged multisig descriptor.")
+            if mode == "Multisig":
+                return result["xprv"], result["xpub"], descriptor
+            return root_xprv, root["xpub"], None
+        finally:
+            stop_private_core(process, temporary, port)
+
+
+def generate_phrase(wallet_hash, os_random, user_entropy, words):
+    user_entropy = user_entropy.encode("utf-8")
+    material = (b"Bails-BIP39-v1\0" + wallet_hash + os_random +
+                len(user_entropy).to_bytes(4, "big") + user_entropy)
+    entropy = hashlib.sha256(material).digest()[:ENTROPY_BYTES[words]]
+    phrase = Mnemonic("english").to_mnemonic(entropy)
+    return phrase, hashlib.sha256(entropy).hexdigest()
+
+
+def main_core(method, *, wallet=None, args=(), stdin=None, named=None):
+    return rpc(DATA_DIR, method, wallet=wallet, args=args, stdin=stdin, named=named)
+
+
+def create_wallet(name, wallet_xprv, wallet_xpub, phrase_password, descriptor):
+    info = main_core("getnetworkinfo")
+    if info.get("version", 0) < 320100:
+        raise SetupError("Wallet setup requires Bitcoin Core 32.1 or newer.")
+    chain = main_core("getblockchaininfo").get("chain")
+    if chain != "main":
+        raise SetupError("BIP39 wallet setup is available on mainnet only.")
+    args = [name, False, True, phrase_password, False, True, True, False]
+    main_core("createwallet", stdin=args)
+    wallet = name
+    encrypted = bool(phrase_password)
+    try:
+        if encrypted:
+            main_core("walletpassphrase", wallet=wallet, stdin=[phrase_password, 60])
+        key = main_core("addhdkey", wallet=wallet, stdin=[wallet_xprv])
+        if key.get("xpub") != wallet_xpub:
+            raise SetupError("Bitcoin Core derived a different BIP32 key than the temporary verifier.")
+        if descriptor is None:
+            main_core("createwalletdescriptor", wallet=wallet,
+                     named={"type": "bech32", "hdkey": wallet_xpub})
+        else:
+            checked = main_core("getdescriptorinfo", stdin=[descriptor])
+            entry = [{"desc": descriptor + "#" + checked["checksum"],
+                      "timestamp": "now", "active": True, "range": [0, 999]}]
+            result = main_core("importdescriptors", wallet=wallet, stdin=[entry])
+            if not result or not all(item.get("success") for item in result):
+                raise SetupError("Bitcoin Core could not import every multisig descriptor. Do not use this wallet.")
+    finally:
+        if encrypted:
+            try:
+                main_core("walletlock", wallet=wallet)
+            except SetupError:
+                pass
+
+
+def get_text(title, prompt, hidden=False):
+    args = ["--entry", f"--title={title}", f"--text={prompt}"]
+    if hidden:
+        args.append("--hide-text")
+    return dialog(*args)
+
+
+def confirm_optional_passphrase():
+    if subprocess.run(["zenity", "--question", "--no-markup", "--title=BIP39 passphrase",
+                       "--text=Did the original wallet use a BIP39 passphrase? A wrong value creates a different wallet.",
+                       "--ok-label=Enter passphrase", "--cancel-label=No passphrase"],
+                      check=False).returncode:
+        return ""
+    first = get_text("BIP39 passphrase", "Enter the original BIP39 passphrase.", True)
+    return first
+
+
+def optional_wallet_encryption():
+    if subprocess.run(["zenity", "--question", "--no-markup", "--title=Wallet file encryption",
+                       "--text=Encrypt this Bitcoin Core wallet file? This is separate from a BIP39 passphrase.",
+                       "--ok-label=Encrypt", "--cancel-label=Leave unencrypted"],
+                      check=False).returncode:
+        return ""
+    fields = dialog("--forms", "--title=Encrypt wallet file", "--text=Choose a strong wallet-file passphrase.",
+                    "--add-password=Passphrase", "--add-password=Confirm passphrase").split("|")
+    if len(fields) != 2 or not fields[0] or fields[0] != fields[1]:
+        raise SetupError("The wallet-file passphrases did not match.")
+    return fields[0]
+
+
+def audit_receipt(wallet_hash, os_hash, entropy_hash, words, user_bytes):
+    size = ENTROPY_BYTES[words]
+    output_slice = f"[:{size}]"
+    return (
+        "BIP39 entropy audit receipt v1\n\n"
+        f"SHA256(temporary Core wallet.dat): {wallet_hash.hex()}\n"
+        f"SHA256(Linux CSPRNG, 32 bytes): {os_hash}\n"
+        f"SHA256(final BIP39 entropy, {size * 8} bits): {entropy_hash}\n"
+        f"User entropy: included={user_bytes > 0}, bytes={user_bytes}; value not recorded\n\n"
+        "Exact mixing formula (length is an unsigned 32-bit big-endian byte count):\n"
+        "entropy = SHA256(b'Bails-BIP39-v1\\0' || SHA256(wallet.dat) ||\n"
+        "                Linux_CSPRNG_32 || length(user_entropy_UTF8) ||\n"
+        f"                user_entropy_UTF8){output_slice}\n\n"
+        f"BIP39: Trezor python-mnemonic, English, {words} words.\n"
+        "This receipt contains commitments, not the phrase or source entropy; it cannot reconstruct the wallet.\n"
+    )
+
+
+def save_receipt(receipt):
+    if subprocess.run(["zenity", "--question", "--no-markup", "--title=Save audit receipt?",
+                       "--text=Save a non-secret audit receipt? It does not contain the phrase or entropy.",
+                       "--ok-label=Save", "--cancel-label=Skip"], check=False).returncode:
+        return
+    path = dialog("--file-selection", "--save", "--confirm-overwrite",
+                  "--title=Save BIP39 audit receipt", "--filename=BIP39-audit.txt")
+    Path(path).write_text(receipt, encoding="utf-8")
+
+
+def main():
+    info = main_core("getnetworkinfo")
+    if not CRYOSTICK_MARKER.is_file():
+        raise SetupError("Seed setup is only available on a configured CryoStick.")
+    if info.get("version", 0) < 320100 or main_core("getblockchaininfo").get("chain") != "main":
+        raise SetupError("Wallet setup requires a running Bitcoin Core 32.1+ mainnet wallet service.")
+    if info.get("networkactive") is not False:
+        main_core("setnetworkactive", stdin=[False])
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        info = main_core("getnetworkinfo")
+        if info.get("networkactive") is False and info.get("connections") == 0:
+            break
+        time.sleep(0.25)
+    else:
+        raise SetupError("Bitcoin Core networking did not turn off. No wallet was created.")
+    action = choose("BIP39 wallet setup", ["Create new recovery phrase", "Restore recovery phrase"])
+    mode = choose("Wallet type", ["Single signature", "Multisig"])
+    name = get_text("Wallet name", "Enter a new Bitcoin Core wallet name.")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,63}", name) or name in (".", ".."):
+        raise SetupError("Use a wallet name of up to 64 letters, numbers, spaces, dots, underscores, or hyphens.")
+    m, n, cosigners = 1, 1, []
+    if mode == "Multisig":
+        fields = dialog("--forms", "--title=Multisig policy", "--text=Native SegWit P2WSH sorted multisig.",
+                        "--add-entry=Required signatures M", "--add-entry=Total signers N").split("|")
+        if len(fields) != 2 or not all(value.isdecimal() for value in fields):
+            raise SetupError("M and N must be whole numbers.")
+        m, n = map(int, fields)
+        if not 1 <= m <= n <= 20 or n < 2:
+            raise SetupError("Use 1 <= M <= N <= 20; Bitcoin Core validates the descriptor limits.")
+        text = dialog("--text-info", "--editable", "--title=Other signers", "--width=760", "--height=420",
+                      "--ok-label=Continue")
+        if len(text) > 10000:
+            raise SetupError("Signer data is too large.")
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if len(lines) != n - 1:
+            raise SetupError(f"Enter exactly {n - 1} other signer account xpubs, one per line.")
+        seen = set()
+        for line in lines:
+            key, xpub = normalize_signer_key(line)
+            if xpub in seen:
+                raise SetupError("Each multisig signer must have a different xpub.")
+            seen.add(xpub)
+            cosigners.append(key)
+    wallet_password = optional_wallet_encryption()
+    mnemonic = Mnemonic("english")
+    if action == "Create new recovery phrase":
+        lengths = ["12 words (recommended)", "15 words", "18 words", "21 words", "24 words"]
+        words = int(choose("Recovery phrase length", lengths).split()[0])
+        wallet_hash, os_random = entropy_sources()
+        os_hash = hashlib.sha256(os_random).hexdigest()
+        show_text("Entropy source commitments",
+                  f"SHA256(temporary Core wallet.dat): {wallet_hash.hex()}\n"
+                  f"SHA256(Linux CSPRNG, 32 bytes): {os_hash}\n\n"
+                  "These commitments are shown before optional user entropy is entered.\n"
+                  "Raw random material stays private and is never written to the audit receipt.",
+                  "Continue to user entropy")
+        user_entropy = get_text("Optional user entropy", "Enter dice rolls, coin flips, or other text. Leave blank to skip.")
+        if len(user_entropy.encode("utf-8")) > 4096:
+            raise SetupError("Keep optional user entropy under 4096 bytes.")
+        path = "m/48h/0h/0h/2h" if mode == "Multisig" else "m/84h/0h/0h"
+        phrase, entropy_hash = generate_phrase(wallet_hash, os_random, user_entropy, words)
+        bip39_passphrase = ""
+        if subprocess.run(["zenity", "--question", "--no-markup", "--title=BIP39 passphrase",
+                           "--text=Enable an optional BIP39 passphrase? The phrase alone will not recover this wallet.",
+                           "--ok-label=Enable", "--cancel-label=No passphrase"], check=False).returncode == 0:
+            fields = dialog("--forms", "--title=BIP39 passphrase", "--text=Write this separate secret down.",
+                            "--add-password=Passphrase", "--add-password=Confirm passphrase").split("|")
+            if len(fields) != 2 or not fields[0] or fields[0] != fields[1]:
+                raise SetupError("The BIP39 passphrases did not match.")
+            bip39_passphrase = fields[0]
+        seed = mnemonic.to_seed(phrase, bip39_passphrase)
+        path = "m/48h/0h/0h/2h" if mode == "Multisig" else "m/84h/0h/0h"
+        wallet_xprv, wallet_xpub, descriptor = prepare_local(seed, mode, path, m, cosigners)
+        receipt = audit_receipt(wallet_hash, os_hash, entropy_hash, words, len(user_entropy.encode("utf-8")))
+        show_text("Write down your recovery phrase", phrase.replace(" ", "\n") + "\n\nKeep these words private and in order.", "Phrase displayed")
+        if " ".join(get_text("Confirm recovery phrase", "Type all recovery words in order.").lower().split()) != phrase:
+            raise SetupError("The recovery phrase did not match. No wallet was created.")
+        show_text("Entropy audit details", receipt)
+        save_receipt(receipt)
+    else:
+        phrase = get_text("Restore recovery phrase", "Enter all BIP39 words in order.")
+        if not mnemonic.check(phrase):
+            raise SetupError("The recovery phrase is invalid or has a bad BIP39 checksum.")
+        bip39_passphrase = confirm_optional_passphrase()
+        seed = mnemonic.to_seed(phrase, bip39_passphrase)
+        path = "m/48h/0h/0h/2h" if mode == "Multisig" else "m/84h/0h/0h"
+        wallet_xprv, wallet_xpub, descriptor = prepare_local(seed, mode, path, m, cosigners)
+    create_wallet(name, wallet_xprv, wallet_xpub, wallet_password, descriptor)
+    dialog("--info", "--title=Wallet created", f"--text=Created {name} in Bitcoin Core.\n\nUse Bitcoin QR to export its watch-only wallet.")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Cancelled:
+        raise SystemExit(0)
+    except (SetupError, ValueError, OSError, subprocess.TimeoutExpired) as error:
+        subprocess.run(["zenity", "--error", "--no-markup", "--title=Wallet setup stopped",
+                        f"--text={error}"], check=False)
+        raise SystemExit(1)
