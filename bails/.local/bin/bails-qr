@@ -112,7 +112,7 @@ while action=$(dialog --list --column=Action "${actions[@]}"); do
             BAILS_RAM_TMP="${BAILS_RAM_TMP:-/dev/shm}" \
                 python3 -P "$(dirname "$0")/bails-wallet" --dev-keep-network ;;
         'Scan QR')
-            receive_psbt --check 2>/dev/null || fail 'Cannot open the clipboard window. Start Bitcoin QR from the Tails desktop or use Core file transfer.'
+            receive_psbt --check 2>/dev/null || fail 'Cannot open the clipboard window. Check python3-gi and GTK 3, or use Core file transfer.'
             timeout 180 zbarcam --nodbus --raw -Sdisable -Sqrcode.enable -Sbinary --oneshot > "$directory/data"
             [ -s "$directory/data" ] || exit 0
             [ "$(wc -c < "$directory/data")" -le 2953 ] || fail 'Payload exceeds one static QR.'
