@@ -49,6 +49,18 @@ Bitcoin Core to validate the resulting descriptor. Compare every origin and
 key with the hardware wallet before receiving funds; Core cannot prove that
 user-supplied origin metadata is truthful.
 
+## Debian VM test mode
+
+On Debian, set `XDG_DATA_HOME="$HOME/.local/share"` and run the pinned
+`install-codex32` and `install-mnemonic` helpers first. Set
+`BAILS_TESTING=1` when launching **Bitcoin QR** to show a separate
+**Wallet Setup (testing)** action. It uses `$HOME/.bitcoin` by default and
+`/dev/shm` for verified RAM-backed temporary files. This explicit mode
+skips the CryoStick marker and leaves the main Core node's networking enabled;
+the temporary Core process used for entropy generation still has networking
+disabled. It is mainnet software: use a throwaway wallet and never receive or
+spend real funds in this mode.
+
 ## Boundaries
 
 - Requires a running mainnet Bitcoin Core 32.1 or newer.
