@@ -35,13 +35,14 @@ the recovery phrase remains the backup.
 
 The first version creates native SegWit P2WSH `sortedmulti` wallets. The local
 signer uses `m/48'/0'/0'/2'`. Other signers provide one account xpub per line,
-with optional origin metadata such as:
+with required origin metadata such as:
 
 ```text
 [f23c9abc/48'/0'/0'/2']Zpub...
 ```
 
-The wizard accepts mainnet xpubs and Zpubs, preserves supplied origins, and
+The wizard accepts mainnet xpubs and Zpubs, requires and preserves each
+signer's origin fingerprint and derivation path for PSBT signing metadata, and
 does not require other signers to use the local signer's derivation path. It
 converts SLIP-132 Zpub version bytes to standard xpub version bytes, then asks
 Bitcoin Core to validate the resulting descriptor. Compare every origin and
@@ -51,8 +52,8 @@ user-supplied origin metadata is truthful.
 ## Boundaries
 
 - Requires a running mainnet Bitcoin Core 32.1 or newer.
-- Runs only when the CryoStick marker exists and the persistent Core node has
-  networking disabled with zero peers.
+- Connects to the persistent Core RPC over loopback only. It runs only when
+  the CryoStick marker exists and Core networking is disabled with zero peers.
 - The temporary Core process uses a separate RAM-backed data directory and
   `-networkactive=0`; it does not connect to or sync the Bitcoin network.
 - Single-signature wallets use Core's native SegWit descriptor. Multisig uses
