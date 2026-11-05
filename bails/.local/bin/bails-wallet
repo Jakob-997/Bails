@@ -16,9 +16,13 @@ import tempfile
 import time
 from pathlib import Path
 
-DATA_DIR = Path("/live/persistence/TailsData_unlocked/Persistent/.bitcoin")
-CRYOSTICK_MARKER = Path("/live/persistence/TailsData_unlocked/dotfiles/.local/state/cryostick")
-DATA_HOME = Path(os.environ.get("XDG_DATA_HOME", "/live/persistence/TailsData_unlocked/dotfiles/.local/share"))
+TAILS_ROOT = Path("/live/persistence/TailsData_unlocked")
+IS_TAILS = TAILS_ROOT.is_dir()
+DATA_DIR = Path(os.environ.get("BAILS_BITCOIN_DATADIR", str(TAILS_ROOT / "Persistent/.bitcoin" if IS_TAILS else Path.home() / ".bitcoin")))
+CRYOSTICK_MARKER = TAILS_ROOT / "dotfiles/.local/state/cryostick"
+DATA_HOME = Path(os.environ.get("XDG_DATA_HOME", str(TAILS_ROOT / "dotfiles/.local/share" if IS_TAILS else Path.home() / ".local/share")))
+RAM_TMP = Path(os.environ.get("BAILS_RAM_TMP", "/tmp" if IS_TAILS else "/dev/shm"))
+DEV_KEEP_NETWORK = "--dev-keep-network" in sys.argv
 sys.path.insert(0, str(DATA_HOME / "python-mnemonic" / "src"))
 sys.path.insert(0, str(DATA_HOME / "python-codex32" / "src"))
 
@@ -27,7 +31,7 @@ try:
     from codex32.profiles.ms32 import MasterSeed
     from codex32.wallet import master_xprv
 except ImportError:
-    raise SystemExit("BIP39 support is not installed. Start CipherStick online and run its update first.")
+    raise SystemExit("BIP39 support is not installed. Run install-mnemonic and install-codex32 first.")
 
 ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 ZPUB_VERSIONS = {bytes.fromhex("02aa7ed3"), bytes.fromhex("04b24746")}
@@ -177,7 +181,7 @@ def entropy_sources():
     findmnt = shutil.which("findmnt")
     if not findmnt or shutil.which("bitcoind") is None:
         raise SetupError("Bitcoin Core and findmnt are required for RAM-only entropy generation.")
-    with tempfile.TemporaryDirectory(prefix="bails-bip39-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="bails-bip39-", dir=RAM_TMP) as temporary:
         directory = Path(temporary)
         fs = subprocess.run([findmnt, "-n", "-o", "FSTYPE", "--target", temporary],
                             text=True, capture_output=True, check=False)
@@ -203,7 +207,7 @@ def entropy_sources():
 
 def prepare_local(seed, mode, path, m, cosigners):
     root_xprv = master_xprv(MasterSeed.from_seed(seed, identifier="qqqq"))
-    with tempfile.TemporaryDirectory(prefix="bails-bip39-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="bails-bip39-", dir=RAM_TMP) as temporary:
         findmnt = shutil.which("findmnt")
         if not findmnt:
             raise SetupError("findmnt is required to verify RAM-backed temporary storage.")
@@ -350,20 +354,25 @@ def save_receipt(receipt):
 
 def main():
     info = main_core("getnetworkinfo")
-    if not CRYOSTICK_MARKER.is_file():
-        raise SetupError("Seed setup is only available on a configured CryoStick.")
+    if not CRYOSTICK_MARKER.is_file() and not DEV_KEEP_NETWORK:
+        raise SetupError("Seed setup is only available on a configured CryoStick; use --dev-keep-network for testing.")
     if info.get("version", 0) < 320100 or main_core("getblockchaininfo").get("chain") != "main":
         raise SetupError("Wallet setup requires a running Bitcoin Core 32.1+ mainnet wallet service.")
-    if info.get("networkactive") is not False:
-        main_core("setnetworkactive", stdin=[False])
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        info = main_core("getnetworkinfo")
-        if info.get("networkactive") is False and info.get("connections") == 0:
-            break
-        time.sleep(0.25)
+    if DEV_KEEP_NETWORK:
+        show_text("TESTING ONLY",
+                  "Bitcoin Core networking will remain enabled. Use a throwaway wallet only; do not receive or spend real funds.",
+                  "Continue")
     else:
-        raise SetupError("Bitcoin Core networking did not turn off. No wallet was created.")
+        if info.get("networkactive") is not False:
+            main_core("setnetworkactive", stdin=[False])
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            info = main_core("getnetworkinfo")
+            if info.get("networkactive") is False and info.get("connections") == 0:
+                break
+            time.sleep(0.25)
+        else:
+            raise SetupError("Bitcoin Core networking did not turn off. No wallet was created.")
     action = choose("BIP39 wallet setup", ["Create new recovery phrase", "Restore recovery phrase"])
     mode = choose("Wallet type", ["Single signature", "Multisig"])
     name = get_text("Wallet name", "Enter a new Bitcoin Core wallet name.")
