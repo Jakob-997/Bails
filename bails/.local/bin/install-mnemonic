@@ -1,0 +1,38 @@
+#!/bin/bash
+# Copyright (c) 2026 Bails contributors
+# Distributed under the MIT license; see LICENSE.
+set -euo pipefail
+
+readonly REPOSITORY="https://github.com/trezor/python-mnemonic.git"
+readonly REVISION="b57a5ad77a981e743f4167ab2f7927a55c1e82a8"
+readonly DATA_HOME="${XDG_DATA_HOME:-/live/persistence/TailsData_unlocked/dotfiles/.local/share}"
+readonly SOURCE_DIR="$DATA_HOME/python-mnemonic"
+
+usable() {
+    local status
+    [ -d "$SOURCE_DIR/.git" ] &&
+        [ "$(git -C "$SOURCE_DIR" rev-parse HEAD 2>/dev/null || true)" = "$REVISION" ] &&
+        status="$(git -C "$SOURCE_DIR" status --porcelain=v1 --untracked-files=all --ignored=matching 2>/dev/null)" &&
+        [ -z "$status" ] &&
+        PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$SOURCE_DIR/src" \
+            python3 -P -c 'from mnemonic import Mnemonic; assert Mnemonic("english").check("abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about")' 2>/dev/null
+}
+
+usable && exit 0
+[ ! -e "$SOURCE_DIR" ] || [ -d "$SOURCE_DIR/.git" ] || {
+    echo "$SOURCE_DIR exists but is not a git checkout." >&2
+    exit 1
+}
+
+mkdir -p "$DATA_HOME"
+if [ ! -d "$SOURCE_DIR/.git" ]; then
+    git clone --filter=blob:none --no-checkout "$REPOSITORY" "$SOURCE_DIR"
+fi
+rm -f -- "$SOURCE_DIR/.git/index"
+git -C "$SOURCE_DIR" fetch --depth=1 origin "$REVISION"
+git -C "$SOURCE_DIR" checkout --detach --force "$REVISION"
+git -C "$SOURCE_DIR" clean -ffdx
+usable || {
+    echo "Trezor's pinned BIP39 library did not verify." >&2
+    exit 1
+}

@@ -109,6 +109,14 @@ else
         exit 1
       fi
     fi
+    # Install the pinned BIP39 library before the cold-signer mode is enabled.
+    if [ ! -e "$DOTFILES/.local/state/cryostick" ] &&
+      ! "$DOTFILES/.local/bin/install-mnemonic"; then
+      zenity --error --title='BIP39 library setup failed' \
+        --text='The pinned Trezor BIP39 library could not be installed. Resolve the error before enabling cold-signer mode.' \
+        "$ICON"
+      exit 1
+    fi
     notify-send --transient --icon=bails128 'CipherStick install complete' \
       "CipherStick $FULL_VERSION is installed; Bitcoin Core is syncing. Lock the screen when briefly away. For longer absences, quit Core, shut down Tails, and secure your USB."
   else
