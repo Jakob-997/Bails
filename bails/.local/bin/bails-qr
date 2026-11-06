@@ -93,9 +93,16 @@ Gtk.main()
 }
 actions=('Scan QR' 'Send PSBT' 'Export Watch-Only Wallet')
 if [ "${BAILS_TESTING:-}" = 1 ]; then
-    actions+=('Wallet Setup (testing)')
+    actions+=('Create Wallet')
 fi
 while action=$(dialog --list --column=Action "${actions[@]}"); do
+    if [ "$action" = 'Create Wallet' ]; then
+        XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}" \
+        BAILS_BITCOIN_DATADIR="${BAILS_BITCOIN_DATADIR:-$HOME/.bitcoin}" \
+        BAILS_RAM_TMP="${BAILS_RAM_TMP:-/dev/shm}" \
+            python3 -P "$(dirname "$0")/bails-wallet" --dev-keep-network
+        continue
+    fi
     (
         set -e
         case "$action" in
@@ -106,11 +113,6 @@ while action=$(dialog --list --column=Action "${actions[@]}"); do
             { cat "$directory/encoded"; printf '\n'; } | rpc -stdin decodepsbt >/dev/null
             base64 -d < "$directory/encoded" > "$directory/data"
             show ;;
-        'Wallet Setup (testing)')
-            XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}" \
-            BAILS_BITCOIN_DATADIR="${BAILS_BITCOIN_DATADIR:-$HOME/.bitcoin}" \
-            BAILS_RAM_TMP="${BAILS_RAM_TMP:-/dev/shm}" \
-                python3 -P "$(dirname "$0")/bails-wallet" --dev-keep-network ;;
         'Scan QR')
             receive_psbt --check 2>/dev/null || fail 'Cannot open the clipboard window. Check python3-gi and GTK 3, or use Core file transfer.'
             timeout 180 zbarcam --nodbus --raw -Sdisable -Sqrcode.enable -Sbinary --oneshot > "$directory/data"
