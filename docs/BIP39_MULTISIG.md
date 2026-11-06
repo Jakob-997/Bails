@@ -54,12 +54,15 @@ user-supplied origin metadata is truthful.
 On Debian, set `XDG_DATA_HOME="$HOME/.local/share"` and run the pinned
 `install-codex32` and `install-mnemonic` helpers first. Set
 `BAILS_TESTING=1` when launching **Bitcoin QR** to show a separate
-**Wallet Setup (testing)** action. It uses `$HOME/.bitcoin` by default and
+**Create Wallet** action. It uses `$HOME/.bitcoin` by default and
 `/dev/shm` for verified RAM-backed temporary files. This explicit mode
 skips the CryoStick marker and leaves the main Core node's networking enabled;
 the temporary Core process used for entropy generation still has networking
 disabled. It is mainnet software: use a throwaway wallet and never receive or
 spend real funds in this mode.
+
+The creation form combines the wallet name and recovery phrase length. Wallet-file
+encryption is offered immediately before Core creates the wallet.
 
 ## Boundaries
 
