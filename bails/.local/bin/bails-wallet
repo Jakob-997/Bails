@@ -93,25 +93,50 @@ def rpc(datadir, method, *, wallet=None, chain=None, port=None, args=(), stdin=N
         raise SetupError(f"Bitcoin Core returned an invalid response to {method}.") from error
 
 
+def startup_details(directory, startup_log):
+    details = []
+    for path in (startup_log, Path(directory) / "debug.log"):
+        try:
+            text = path.read_text(errors="replace").strip()
+        except OSError:
+            continue
+        if text:
+            details.append(f"{path.name}:\n{text[-1200:]}")
+    return "\n".join(details)[-2400:]
+
+
 def start_private_core(directory, port, wallet=None):
     bitcoind = shutil.which("bitcoind")
     if not bitcoind:
         raise SetupError("Bitcoin Core's bitcoind was not found.")
     command = [bitcoind, f"-datadir={directory}", "-chain=main", f"-rpcport={port}",
                "-daemon=0", "-server=1", "-networkactive=0", "-listen=0", "-connect=0",
-               "-dnsseed=0", "-discover=0", "-upnp=0", "-natpmp=0"]
+               "-dnsseed=0", "-discover=0", "-natpmp=0"]
     if wallet:
         command.append(f"-wallet={wallet}")
     log = Path(directory) / "bitcoind-startup.log"
     with log.open("w") as output:
         process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.DEVNULL, stderr=output)
+
+    def fail(message):
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=5)
+        code = process.returncode
+        if code is not None:
+            message += f" (exit code {code})"
+        details = startup_details(directory, log)
+        raise SetupError(message + (f"\n\n{details}" if details else ""))
+
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            details = log.read_text(errors="replace")[-1200:].strip()
-            raise SetupError("Temporary offline Core exited during startup." +
-                             (f"\\n{details}" if details else ""))
+            fail("Temporary offline Core exited during startup.")
         try:
             info = rpc(directory, "getnetworkinfo", chain="main", port=port, timeout=2)
         except SetupError:
@@ -122,10 +147,7 @@ def start_private_core(directory, port, wallet=None):
             process.wait(timeout=5)
             raise SetupError("The temporary Bitcoin Core process did not stay offline.")
         return process
-    process.terminate()
-    process.wait(timeout=5)
-    raise SetupError("The temporary offline Bitcoin Core process timed out.")
-
+    fail("Temporary offline Core timed out waiting for local RPC.")
 
 def stop_private_core(process, directory, port):
     if process.poll() is None:
