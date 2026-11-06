@@ -102,12 +102,16 @@ def start_private_core(directory, port, wallet=None):
                "-dnsseed=0", "-discover=0", "-upnp=0", "-natpmp=0"]
     if wallet:
         command.append(f"-wallet={wallet}")
-    process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log = Path(directory) / "bitcoind-startup.log"
+    with log.open("w") as output:
+        process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=output)
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            raise SetupError("The temporary offline Bitcoin Core process did not start.")
+            details = log.read_text(errors="replace")[-1200:].strip()
+            raise SetupError("Temporary offline Core exited during startup." +
+                             (f"\\n{details}" if details else ""))
         try:
             info = rpc(directory, "getnetworkinfo", chain="main", port=port, timeout=2)
         except SetupError:
@@ -359,9 +363,7 @@ def main():
     if info.get("version", 0) < 320100 or main_core("getblockchaininfo").get("chain") != "main":
         raise SetupError("Wallet setup requires a running Bitcoin Core 32.1+ mainnet wallet service.")
     if DEV_KEEP_NETWORK:
-        show_text("TESTING ONLY",
-                  "Bitcoin Core networking will remain enabled. Use a throwaway wallet only; do not receive or spend real funds.",
-                  "Continue")
+        pass
     else:
         if info.get("networkactive") is not False:
             main_core("setnetworkactive", stdin=[False])
@@ -375,7 +377,17 @@ def main():
             raise SetupError("Bitcoin Core networking did not turn off. No wallet was created.")
     action = choose("BIP39 wallet setup", ["Create new recovery phrase", "Restore recovery phrase"])
     mode = choose("Wallet type", ["Single signature", "Multisig"])
-    name = get_text("Wallet name", "Enter a new Bitcoin Core wallet name.")
+    if action == "Create new recovery phrase":
+        fields = dialog("--forms", "--title=New wallet", "--add-entry=Wallet name",
+                        "--add-combo=Recovery phrase length",
+                        "--combo-values=12 words (recommended)|15 words|18 words|21 words|24 words").split("|")
+        if len(fields) != 2:
+            raise SetupError("Enter a wallet name and choose a recovery phrase length.")
+        name, length = fields
+        words = int(length.split()[0])
+    else:
+        name = get_text("Wallet name", "Enter a new Bitcoin Core wallet name.")
+        words = 0
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,63}", name) or name in (".", ".."):
         raise SetupError("Use a wallet name of up to 64 letters, numbers, spaces, dots, underscores, or hyphens.")
     m, n, cosigners = 1, 1, []
@@ -401,11 +413,8 @@ def main():
                 raise SetupError("Each multisig signer must have a different xpub.")
             seen.add(xpub)
             cosigners.append(key)
-    wallet_password = optional_wallet_encryption()
     mnemonic = Mnemonic("english")
     if action == "Create new recovery phrase":
-        lengths = ["12 words (recommended)", "15 words", "18 words", "21 words", "24 words"]
-        words = int(choose("Recovery phrase length", lengths).split()[0])
         wallet_hash, os_random = entropy_sources()
         os_hash = hashlib.sha256(os_random).hexdigest()
         show_text("Entropy source commitments",
@@ -437,6 +446,7 @@ def main():
             raise SetupError("The recovery phrase did not match. No wallet was created.")
         show_text("Entropy audit details", receipt)
         save_receipt(receipt)
+        wallet_password = optional_wallet_encryption()
     else:
         phrase = get_text("Restore recovery phrase", "Enter all BIP39 words in order.")
         if not mnemonic.check(phrase):
@@ -445,6 +455,7 @@ def main():
         seed = mnemonic.to_seed(phrase, bip39_passphrase)
         path = "m/48h/0h/0h/2h" if mode == "Multisig" else "m/84h/0h/0h"
         wallet_xprv, wallet_xpub, descriptor = prepare_local(seed, mode, path, m, cosigners)
+        wallet_password = optional_wallet_encryption()
     create_wallet(name, wallet_xprv, wallet_xpub, wallet_password, descriptor)
     dialog("--info", "--title=Wallet created", f"--text=Created {name} in Bitcoin Core.\n\nUse Bitcoin QR to export its watch-only wallet.")
 
